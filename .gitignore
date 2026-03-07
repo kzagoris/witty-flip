@@ -1,1 +1,28 @@
-firebase-debug.log
+node_modules/
+dist/
+.output/
+drizzle/
+
+# Data
+data/sqlite.db
+data/conversions/
+
+# Environment
+.env
+.env.*
+!.env.example
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.idea/
+*.swp
+*.swo
+
+# Logs
+*.log
+
+# TanStack Router generated
+app/routeTree.gen.ts
