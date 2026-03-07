@@ -100,11 +100,11 @@ wittyflip.com
 ### Data Model
 
 ```sql
--- Rate limiting by IP
+-- Rate limiting by IP for successful free conversions only
 CREATE TABLE rate_limits (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   ip_address TEXT NOT NULL,
-  conversion_count INTEGER DEFAULT 0,
+  free_conversion_count INTEGER DEFAULT 0,
   date TEXT NOT NULL, -- YYYY-MM-DD
   UNIQUE(ip_address, date)
 );
@@ -112,6 +112,7 @@ CREATE TABLE rate_limits (
 -- Payment records
 CREATE TABLE payments (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
+  file_id TEXT NOT NULL, -- references conversions.id
   stripe_session_id TEXT UNIQUE NOT NULL,
   stripe_payment_intent TEXT,
   amount_cents INTEGER NOT NULL, -- 49 = $0.49
@@ -120,19 +121,30 @@ CREATE TABLE payments (
   conversion_type TEXT NOT NULL, -- e.g., 'docx-to-markdown'
   status TEXT DEFAULT 'pending', -- pending, completed, failed
   created_at TEXT DEFAULT (datetime('now')),
+  checkout_expires_at TEXT,
   completed_at TEXT
 );
 
--- Conversion analytics log
+-- Conversion jobs + analytics log
 CREATE TABLE conversions (
-  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  id TEXT PRIMARY KEY, -- UUID returned to the client as fileId
+  original_filename TEXT NOT NULL,
+  source_format TEXT NOT NULL,
+  target_format TEXT NOT NULL,
   conversion_type TEXT NOT NULL, -- e.g., 'docx-to-markdown'
   ip_address TEXT NOT NULL,
-  file_size_bytes INTEGER,
+  input_file_size_bytes INTEGER,
+  output_file_size_bytes INTEGER,
+  tool_name TEXT,
+  tool_exit_code INTEGER,
   conversion_time_ms INTEGER,
   was_paid INTEGER DEFAULT 0, -- boolean: 0=free, 1=paid
-  status TEXT DEFAULT 'completed', -- completed, failed, timeout
-  created_at TEXT DEFAULT (datetime('now'))
+  status TEXT DEFAULT 'uploaded', -- uploaded, payment_required, pending_payment, queued, converting, completed, failed, timeout, expired
+  error_message TEXT,
+  created_at TEXT DEFAULT (datetime('now')),
+  conversion_started_at TEXT,
+  conversion_completed_at TEXT,
+  expires_at TEXT
 );
 ```
 
@@ -141,30 +153,44 @@ CREATE TABLE conversions (
 ```
 POST /api/upload
   - Accepts multipart file upload
-  - Validates: file type (magic bytes), file size (<10MB), rate limit
-  - Returns: { fileId: "uuid", status: "ready" }
+  - Validates: file type (magic bytes), file size (<10MB)
+  - Stores the file on disk using a UUID-based path
+  - Creates a conversion row with status="uploaded"
+  - Returns: { fileId: "uuid", status: "uploaded" }
 
 POST /api/convert
   - Body: { fileId, targetFormat }
-  - Runs conversion subprocess with timeout (30s)
-  - Returns: { fileId, downloadUrl, status: "completed" }
+  - Checks the free daily quota for the caller IP
+  - If quota remains: enqueues the job and returns { fileId, status: "queued" }
+  - If quota is exhausted: marks the row payment_required and returns 402 { fileId, status: "payment_required" }
 
 GET /api/download/:fileId
   - Serves converted file
   - Sets Content-Disposition header for download
-  - Deletes file reference after successful download (optional)
+  - Only works for completed, unexpired jobs
+  - Does not delete the file immediately; retention is handled by expires_at + cleanup
+
+GET /api/conversion/:fileId/status
+  - Returns the current job state for polling after refresh/payment
+  - Returns: { fileId, status, progress?, downloadUrl?, expiresAt?, errorCode?, message? }
 
 POST /api/create-checkout
-  - Body: { fileId, conversionType }
-  - Creates Stripe Checkout session
-  - Returns: { checkoutUrl }
+  - Body: { fileId }
+  - Only valid for rows already marked payment_required
+  - Creates Stripe Checkout session and marks payment status pending
+  - Returns: { checkoutUrl, sessionId }
 
 POST /api/webhook/stripe
   - Stripe webhook for payment confirmation
-  - On success: marks payment complete, triggers conversion
+  - Verifies Stripe signature
+  - On success: marks payment complete, sets was_paid=1, enqueues conversion
 
 GET /api/rate-limit-status
   - Returns: { remaining: 2, limit: 2, resetAt: "2026-03-08T00:00:00Z" }
+
+Error response shape
+  - All non-2xx responses return:
+    { error: "machine_readable_code", message: "User-friendly explanation", fileId?: "uuid", checkoutUrl?: "..." }
 ```
 
 ### File Processing Pipeline
@@ -175,25 +201,39 @@ GET /api/rate-limit-status
    - Validate magic bytes match declared file type
    - Enforce 10MB size limit
    - Save to /conversions/{uuid}.{ext}
+   - Create conversions row with status="uploaded"
 
 2. Rate Limit Check
+   - Happens when POST /api/convert is called, not during upload
    - Query rate_limits table for IP + today's date
-   - If count < 2: proceed (free)
-   - If count >= 2: return "payment required" with Stripe checkout URL
+   - If successful free conversions today < 2: enqueue the job
+   - If free quota is exhausted: return payment_required
+   - Failed conversions do NOT consume free quota
+   - Paid conversions bypass the free quota and do NOT increment it
 
-3. Convert
+3. Payment (only when required)
+   - Client calls POST /api/create-checkout for payment_required jobs
+   - Stripe Checkout completes as guest
+   - Conversion begins only after a verified webhook confirms payment
+
+4. Queue + Convert
+   - Database-backed queue with max 5 concurrent conversion jobs
+   - Job status lifecycle: uploaded -> payment_required/pending_payment -> queued -> converting -> completed/failed/timeout
    - Spawn conversion tool as child process
    - Set timeout: 30 seconds
    - Set memory limit via ulimit or cgroup
    - Save output to /conversions/{uuid}-output.{ext}
-   - Log conversion to analytics table
+   - Record tool name, exit code, timing, and any user-safe error message
+   - On successful free conversions only, increment rate_limits.free_conversion_count
 
-4. Download
+5. Download
    - Serve file with proper Content-Type and Content-Disposition
-   - File remains available for 1 hour
+   - File remains available for 1 hour from successful conversion completion
+   - Free and paid conversions use the same 1-hour retention window
 
-5. Cleanup
-   - Cron job every 15 minutes: find /conversions -mmin +60 -delete
+6. Cleanup
+   - Cron job every 15 minutes deletes files whose conversions.expires_at has passed
+   - Never delete rows/files that are still pending_payment, queued, or converting
    - Also cleanup on process shutdown (graceful)
 ```
 
@@ -261,7 +301,7 @@ Each page includes:
 
 Supporting content for long-tail keywords:
 - "How to Convert DOCX to Markdown: 5 Methods Compared"
-- "Best DJVU to PDF Converters in 2026"
+- "How to Convert DJVU to PDF Without Installing Software"
 - "LaTeX to PDF: Complete Guide for Researchers"
 - "EPUB vs MOBI: Which Ebook Format to Use"
 
@@ -270,7 +310,8 @@ Supporting content for long-tail keywords:
 Auto-generate pages for reverse conversions and future formats:
 - `/markdown-to-docx`, `/pdf-to-djvu`, `/mobi-to-epub`
 - Show "Coming soon" with email capture for unsupported conversions
-- Each page is indexable and captures search intent
+- Unsupported pages should be `noindex` until the conversion is actually available
+- Only index pages backed by a working converter and original supporting copy
 
 **4. Technical SEO**
 
@@ -288,7 +329,7 @@ Auto-generate pages for reverse conversions and future formats:
 
 **Bold and colorful** — differentiate from the bland white converter competitors.
 
-- **Primary brand color:** Vibrant (purple, coral, or electric blue — TBD)
+- **Primary brand color:** Vibrant purple for the global brand, with format colors used as accents
 - **Format-specific colors:** DOCX=blue, PDF=red, Markdown=purple, LaTeX=green, EPUB=teal, DJVU=amber, ODT=orange
 - **Typography:** Bold headings (Plus Jakarta Sans or Geist), clean body text (Inter)
 - **Gradient backgrounds:** Vibrant hero sections per conversion page
@@ -356,7 +397,7 @@ Auto-generate pages for reverse conversions and future formats:
 
 ### Trust Signals
 
-- "Your files are encrypted and deleted after 1 hour"
+- "Your files are stored temporarily and deleted 1 hour after successful conversion"
 - Conversion counter: "12,847 files converted this week"
 - Clean, professional design with no dark patterns
 - HTTPS lock visible in browser
@@ -367,10 +408,10 @@ Auto-generate pages for reverse conversions and future formats:
 
 | Threat | Mitigation |
 |---|---|
-| **Malicious files** | Run conversion tools in sandboxed subprocess. Docker container provides isolation. |
+| **Malicious files** | Run conversion tools in an isolated worker container. The conversion process runs as non-root with dropped Linux capabilities. |
 | **Path traversal** | Never use user-provided filenames. All files renamed to UUID on upload. |
 | **Resource exhaustion** | 10MB file size limit. 30-second conversion timeout. Memory limit per process. |
-| **SSRF (HTML->PDF)** | Disable network access in conversion tools. Block outbound requests. |
+| **SSRF (HTML->PDF)** | Run HTML->PDF conversion with `--network=none` / equivalent isolation so the worker has no outbound network access. |
 | **File type spoofing** | Validate magic bytes (not just extension) using `file-type` npm package. |
 | **Concurrent abuse** | Rate limit: max 10 requests/minute per IP. |
 
@@ -381,6 +422,7 @@ Auto-generate pages for reverse conversions and future formats:
 - Conversion subprocess with reduced Linux capabilities (`--cap-drop=ALL`)
 - Auto-delete uploaded files even on conversion failure (finally block)
 - Never serve user-uploaded files directly — always generate fresh download response
+- Trust only proxy headers set by Caddy when determining client IP for rate limiting
 - CSRF protection on all API routes
 - Stripe webhook signature verification
 - Input validation on all API endpoints
@@ -460,6 +502,11 @@ volumes:
   caddy_data:
 ```
 
+Deployment secrets:
+- Keep Stripe secrets in a gitignored `.env.production` (or equivalent secret store on the VPS)
+- Load them into Docker Compose at deploy time
+- Never commit live secrets into the repository
+
 ```
 # Caddyfile
 wittyflip.com {
@@ -470,7 +517,7 @@ wittyflip.com {
 ### Deployment Flow
 
 1. Push code to GitHub
-2. SSH into VPS: `git pull && docker compose up --build -d`
+2. SSH into VPS: `git pull && docker compose --env-file .env.production up --build -d`
 3. Future: GitHub Actions for automated deployment on push to main
 
 ### Monitoring
@@ -515,10 +562,12 @@ wittyflip/
 |   |   +-- rate-limit.ts             # IP-based rate limiting
 |   |   +-- file-validation.ts        # Magic byte checking
 |   |   +-- conversions.ts            # Supported conversion definitions
+|   |   +-- queue.ts                  # DB-backed queue + concurrency control
 |   +-- server/
 |   |   +-- api/
 |   |       +-- upload.ts
 |   |       +-- convert.ts
+|   |       +-- conversion-status.ts  # Polling endpoint for queued/running jobs
 |   |       +-- download.ts
 |   |       +-- create-checkout.ts
 |   |       +-- webhook/
@@ -548,25 +597,47 @@ wittyflip/
 |---|---|
 | Unsupported file type uploaded | Validate magic bytes. Show clear error: "This file type isn't supported. We accept: .docx, .md, .html, .djvu, .epub, .odt, .tex" |
 | File too large (>10MB) | Client-side check before upload. Server-side enforcement. Show: "File too large. Maximum size is 10MB." |
-| Conversion fails | Log error, delete temp files, show: "Conversion failed. Please try again or try a different file." Return 500 with user-friendly message. |
+| Conversion fails | Log error, delete temp files, show: "Conversion failed. Please try again or try a different file." Return 500 with user-friendly message. Failed jobs do not consume the free quota. |
 | Conversion timeout (>30s) | Kill subprocess, clean up, show timeout message. |
 | Stripe payment fails | Show Stripe's error message. File is not converted. User can retry. |
-| Stripe webhook delayed | Conversion waits for webhook confirmation. Show "Processing payment..." with polling. |
+| Stripe webhook delayed | Keep the job in `pending_payment`, exempt it from cleanup, and show "Processing payment..." with polling. |
 | VPS disk full | Monitor disk usage. Alert at 80%. Cleanup cron prevents this. |
-| Concurrent conversions overload | Queue with max 5 concurrent conversions. Show "Server busy, please wait..." for overflow. |
+| Concurrent conversions overload | Queue with max 5 concurrent conversions. Additional jobs remain queued; the status endpoint returns queue state for polling. |
 | User refreshes during conversion | Conversion continues server-side. Result available via fileId polling. |
 | Corrupted input file | Pandoc/tools will fail gracefully. Catch error, show user-friendly message. |
+
+## Acceptance Criteria & Launch QA
+
+### Conversion Acceptance Criteria
+
+- Every supported conversion pair must have fixture files checked before launch.
+- Minimum fixture set per format pair:
+  - simple text-only sample
+  - sample with headings/lists
+  - sample with tables or structured content
+  - sample with embedded images or attachments where relevant
+  - corrupted/invalid sample for failure-path testing
+- Pass criteria for v1:
+  - conversion completes within 30 seconds for supported files under 10MB
+  - output opens in the target format's standard reader/editor
+  - text-based conversions preserve the primary document text and structure well enough to be useful
+  - failed conversions surface a clear message and leave no downloadable artifact
+  - paid conversions do not start until Stripe webhook verification succeeds
+
+### Tooling Decisions for v1
+
+- Use weasyprint for HTML -> PDF in v1 to avoid the operational overhead of a browser runtime
+- Revisit Puppeteer only if the output quality from weasyprint is unacceptable for real samples
 
 ## Open Questions & Risks
 
 ### Open Questions
 
-1. **Exact brand color palette** — need to finalize primary + accent colors for the bold/colorful design direction
+1. **Exact accent palette** — primary brand color is purple, but accent shades still need to be finalized
 2. **Domain availability** — check wittyflip.com, wittyflip.io, wittyflip.app
 3. **AdSense approval timeline** — Google AdSense requires site review; may take days/weeks. Plan for launch without ads.
 4. **Stripe country/currency** — confirm Stripe availability in your country and supported currencies
-5. **Conversion quality** — need to test each conversion pair for output quality before launch. Pandoc DOCX->MD may lose complex formatting.
-6. **weasyprint vs Puppeteer for HTML->PDF** — need to benchmark quality and performance
+5. **Conversion quality** — validate the fixture matrix before launch. Pandoc DOCX->MD may lose complex formatting.
 
 ### Risks
 
