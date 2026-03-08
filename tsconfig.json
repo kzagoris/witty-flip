@@ -14,5 +14,12 @@
       "~/*": ["./app/*"]
     }
   },
-  "include": ["app/**/*.ts", "app/**/*.tsx", "vite.config.ts", "drizzle.config.ts"]
+  "include": [
+    "app/**/*.ts",
+    "app/**/*.tsx",
+    "vite.config.ts",
+    "vitest.config.ts",
+    "drizzle.config.ts",
+    "tests/**/*.ts"
+  ]
 }
