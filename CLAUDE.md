@@ -23,6 +23,7 @@ npm run dev              # Dev server with HMR
 npm run build            # Production build
 npm run type-check       # TypeScript checking
 npm run lint             # Linting
+npm run db:generate      # Generate Drizzle migration from schema
 npm run db:migrate       # Run Drizzle migrations
 docker compose up        # Run full stack (app + Caddy)
 docker compose --env-file .env.production up --build -d  # Production deploy
@@ -58,6 +59,23 @@ Three tables in SQLite via Drizzle ORM (`app/lib/db/schema.ts`):
 ### Converter Registry
 
 Each conversion tool has a wrapper in `app/lib/converters/` (pandoc.ts, libreoffice.ts, etc.) registered through `app/lib/converters/index.ts`. Conversions run as child processes with 30-second timeout and dropped Linux capabilities.
+
+### Implementation Status
+
+- **Phase 1 (Foundation):** Complete — conversions registry, file validation, rate limiting, converter interface, queue, Stripe integration, ESLint, Drizzle migrations
+- **Phase 2 (Converters):** Not started — actual converter wrappers (pandoc, weasyprint, etc.)
+- **Phase 3+ (API, UI, SEO):** Not started
+
+### Key Modules
+
+| Module | File | Notes |
+|--------|------|-------|
+| Conversion definitions | `app/lib/conversions.ts` | 7 types with SEO/FAQ data, lookup by slug |
+| File validation | `app/lib/file-validation.ts` | Magic bytes (DjVu header), ZIP-based, UTF-8 text |
+| Rate limiting | `app/lib/rate-limit.ts` | IP + UTC date, 2 free/day |
+| Converter registry | `app/lib/converters/index.ts` | `Converter` interface with AbortSignal |
+| Queue | `app/lib/queue.ts` | Max 5 concurrent, 30s timeout, re-entrant guard |
+| Stripe | `app/lib/stripe.ts` | Checkout, webhook verification, idempotent handler |
 
 ## Security Constraints
 

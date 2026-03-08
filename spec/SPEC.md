@@ -133,6 +133,7 @@ CREATE TABLE conversions (
   target_format TEXT NOT NULL,
   conversion_type TEXT NOT NULL, -- e.g., 'docx-to-markdown'
   ip_address TEXT NOT NULL,
+  input_file_path TEXT NOT NULL, -- exact saved filename on disk, e.g. "{uuid}.md"
   input_file_size_bytes INTEGER,
   output_file_size_bytes INTEGER,
   tool_name TEXT,
@@ -554,6 +555,7 @@ wittyflip/
 |   |   |   +-- djvulibre.ts          # DJVU converter wrapper
 |   |   |   +-- calibre.ts            # Calibre wrapper
 |   |   |   +-- weasyprint.ts         # HTML/CSS to PDF wrapper
+|   |   |   +-- pdflatex.ts           # LaTeX to PDF wrapper
 |   |   |   +-- index.ts              # Converter registry
 |   |   +-- db/
 |   |   |   +-- schema.ts             # Drizzle schema
@@ -582,10 +584,12 @@ wittyflip/
 +-- public/
 |   +-- icons/                        # Format-specific icons
 |   +-- og-images/                    # Social sharing images per conversion
++-- drizzle/                          # Drizzle migration files (committed)
 +-- docker-compose.yml
 +-- Dockerfile
 +-- Caddyfile
 +-- drizzle.config.ts
++-- eslint.config.js                   # ESLint flat config (TypeScript)
 +-- tailwind.config.ts
 +-- package.json
 +-- tsconfig.json

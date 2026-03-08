@@ -1,4 +1,4 @@
-import { sqliteTable, text, integer } from 'drizzle-orm/sqlite-core'
+import { sqliteTable, text, integer, uniqueIndex } from 'drizzle-orm/sqlite-core'
 import { sql } from 'drizzle-orm'
 
 export const rateLimits = sqliteTable('rate_limits', {
@@ -6,9 +6,9 @@ export const rateLimits = sqliteTable('rate_limits', {
   ipAddress: text('ip_address').notNull(),
   freeConversionCount: integer('free_conversion_count').default(0),
   date: text('date').notNull(), // YYYY-MM-DD
-}, (table) => ({
-  uniqueIpDate: sql`UNIQUE(${table.ipAddress}, ${table.date})`,
-}))
+}, (table) => [
+  uniqueIndex('rate_limits_ip_date_unique').on(table.ipAddress, table.date),
+])
 
 export const payments = sqliteTable('payments', {
   id: integer('id').primaryKey({ autoIncrement: true }),
@@ -32,6 +32,7 @@ export const conversions = sqliteTable('conversions', {
   targetFormat: text('target_format').notNull(),
   conversionType: text('conversion_type').notNull(),
   ipAddress: text('ip_address').notNull(),
+  inputFilePath: text('input_file_path').notNull(),
   inputFileSizeBytes: integer('input_file_size_bytes'),
   outputFileSizeBytes: integer('output_file_size_bytes'),
   toolName: text('tool_name'),
