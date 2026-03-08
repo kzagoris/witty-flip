@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
+import path from 'node:path'
 import type { SpawnResult } from '~/lib/converters/spawn-helper'
 
 vi.mock('~/lib/converters/spawn-helper', async (importOriginal) => {
@@ -65,7 +66,7 @@ describe('pdflatex converter', () => {
     spawnWithSignal.mockResolvedValue({ exitCode: 0, stdout: '', stderr: '' } satisfies SpawnResult)
     await pdflatexConverter.convert(INPUT, OUTPUT, AbortSignal.timeout(5_000))
     expect(fsMock.rename).toHaveBeenCalledWith(
-      '/tmp/pdflatex-abc123/document.pdf',
+      path.join('/tmp', 'pdflatex-abc123', 'document.pdf'),
       OUTPUT,
     )
   })

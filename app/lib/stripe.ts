@@ -71,6 +71,11 @@ export async function createCheckoutSession(fileId: string): Promise<{ checkoutU
 
   const reusableSession = await getReusableCheckoutSession(fileId)
   if (reusableSession) {
+    await db
+      .update(conversions)
+      .set({ status: 'pending_payment' })
+      .where(eq(conversions.id, fileId))
+
     return reusableSession
   }
 

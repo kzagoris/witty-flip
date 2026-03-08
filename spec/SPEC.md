@@ -105,6 +105,7 @@ CREATE TABLE rate_limits (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   ip_address TEXT NOT NULL,
   free_conversion_count INTEGER DEFAULT 0,
+  reserved_free_slots INTEGER DEFAULT 0,
   date TEXT NOT NULL, -- YYYY-MM-DD
   UNIQUE(ip_address, date)
 );
@@ -136,6 +137,7 @@ CREATE TABLE conversions (
   input_file_path TEXT NOT NULL, -- exact saved filename on disk, e.g. "{uuid}.md"
   input_file_size_bytes INTEGER,
   output_file_size_bytes INTEGER,
+  rate_limit_date TEXT, -- reservation date used to consume/release a free slot after queueing
   tool_name TEXT,
   tool_exit_code INTEGER,
   conversion_time_ms INTEGER,
@@ -161,9 +163,9 @@ POST /api/upload
   - Returns: { fileId: "uuid", status: "uploaded" }
 
 POST /api/convert
-  - Body: { fileId, targetFormat }
+  - Body: { fileId }
   - Checks the free daily quota for the caller IP resolved via trusted-proxy policy
-  - If quota remains: enqueues the job and returns { fileId, status: "queued" }
+  - If quota remains: reserves a free slot atomically, enqueues the job, and returns { fileId, status: "queued" }
   - If quota is exhausted: marks the row payment_required and returns 402 { fileId, status: "payment_required" }
 
 GET /api/download/:fileId
@@ -174,11 +176,11 @@ GET /api/download/:fileId
 
 GET /api/conversion/:fileId/status
   - Returns the current job state for polling after refresh/payment
-  - Returns: { fileId, status, progress?, downloadUrl?, expiresAt?, errorCode?, message? }
+  - Returns: { fileId, status, progress, downloadUrl?, expiresAt?, errorCode?, message? }
 
 POST /api/create-checkout
   - Body: { fileId }
-  - Only valid for rows already marked payment_required
+  - Valid for rows marked payment_required or pending_payment so checkout can be retried cleanly
   - Creates Stripe Checkout session and marks payment status pending
   - Returns: { checkoutUrl, sessionId }
 
@@ -190,6 +192,10 @@ POST /api/webhook/stripe
 GET /api/rate-limit-status
   - Resolves caller IP via the same trusted-proxy policy as /api/convert
   - Returns: { remaining: 2, limit: 2, resetAt: "2026-03-08T00:00:00Z" }
+
+GET /api/health
+  - Lightweight liveness endpoint used by Docker/Caddy health checks
+  - Returns: { status: "ok" }
 
 Error response shape
   - All non-2xx responses return:
@@ -215,7 +221,8 @@ Trusted proxy policy
 2. Rate Limit Check
    - Happens when POST /api/convert is called, not during upload
    - Query rate_limits table for IP + today's date
-   - If successful free conversions today < 2: enqueue the job
+   - Reserve a free slot atomically before queueing so concurrent free requests cannot oversubscribe the quota
+   - If successful free conversions today + reserved free slots < 2: enqueue the job
    - If free quota is exhausted: return payment_required
    - Failed conversions do NOT consume free quota
    - Paid conversions bypass the free quota and do NOT increment it
@@ -233,7 +240,8 @@ Trusted proxy policy
    - Set memory limit via ulimit or cgroup
    - Save output to /conversions/{uuid}-output.{ext}
    - Record tool name, exit code, timing, and any user-safe error message
-   - On successful free conversions only, increment rate_limits.free_conversion_count
+   - On successful free conversions only, convert the reserved free slot into rate_limits.free_conversion_count
+   - On failed/timeout free conversions, release the reserved free slot and delete any partial output artifact
 
 5. Download
    - Serve file with proper Content-Type and Content-Disposition

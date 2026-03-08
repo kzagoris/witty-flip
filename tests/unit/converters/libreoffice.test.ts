@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
+import path from 'node:path'
 import type { SpawnResult } from '~/lib/converters/spawn-helper'
 
 vi.mock('~/lib/converters/spawn-helper', async (importOriginal) => {
@@ -75,7 +76,7 @@ describe('libreoffice converter', () => {
     spawnWithSignal.mockResolvedValue({ exitCode: 0, stdout: '', stderr: '' } satisfies SpawnResult)
     await libreofficeConverter.convert(INPUT, OUTPUT, AbortSignal.timeout(5_000))
     // LibreOffice generates /data/input.docx, expected is /data/output.docx
-    expect(fsMock.rename).toHaveBeenCalledWith('/data/input.docx', OUTPUT)
+    expect(fsMock.rename).toHaveBeenCalledWith(path.join('/data', 'input.docx'), OUTPUT)
   })
 
   it('returns success on exit code 0', async () => {
@@ -98,7 +99,7 @@ describe('libreoffice converter', () => {
     spawnWithSignal.mockResolvedValue({ exitCode: 0, stdout: '', stderr: '' } satisfies SpawnResult)
     await libreofficeConverter.convert(INPUT, OUTPUT, AbortSignal.timeout(5_000))
     expect(fsMock.rm).toHaveBeenCalledWith(
-      '/tmp/lo-test-uuid-1234',
+      path.join('/tmp', 'lo-test-uuid-1234'),
       { recursive: true, force: true },
     )
   })
@@ -107,7 +108,7 @@ describe('libreoffice converter', () => {
     spawnWithSignal.mockResolvedValue({ exitCode: 1, stdout: '', stderr: 'err' } satisfies SpawnResult)
     await libreofficeConverter.convert(INPUT, OUTPUT, AbortSignal.timeout(5_000))
     expect(fsMock.rm).toHaveBeenCalledWith(
-      '/tmp/lo-test-uuid-1234',
+      path.join('/tmp', 'lo-test-uuid-1234'),
       { recursive: true, force: true },
     )
   })

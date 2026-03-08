@@ -5,6 +5,7 @@ export const rateLimits = sqliteTable('rate_limits', {
   id: integer('id').primaryKey({ autoIncrement: true }),
   ipAddress: text('ip_address').notNull(),
   freeConversionCount: integer('free_conversion_count').default(0),
+  reservedFreeSlots: integer('reserved_free_slots').default(0),
   date: text('date').notNull(), // YYYY-MM-DD
 }, (table) => [
   uniqueIndex('rate_limits_ip_date_unique').on(table.ipAddress, table.date),
@@ -35,6 +36,7 @@ export const conversions = sqliteTable('conversions', {
   inputFilePath: text('input_file_path').notNull(),
   inputFileSizeBytes: integer('input_file_size_bytes'),
   outputFileSizeBytes: integer('output_file_size_bytes'),
+  rateLimitDate: text('rate_limit_date'),
   toolName: text('tool_name'),
   toolExitCode: integer('tool_exit_code'),
   conversionTimeMs: integer('conversion_time_ms'),

@@ -3,20 +3,32 @@ import { spawnWithSignal } from '~/lib/converters/spawn-helper'
 
 describe('spawnWithSignal', () => {
   it('resolves with exitCode 0 and correct stdout for a simple command', async () => {
-    const result = await spawnWithSignal('echo', ['hello'], AbortSignal.timeout(5_000))
+    const result = await spawnWithSignal(
+      process.execPath,
+      ['-e', "console.log('hello')"],
+      AbortSignal.timeout(5_000),
+    )
     expect(result.exitCode).toBe(0)
     expect(result.stdout.trim()).toBe('hello')
     expect(result.stderr).toBe('')
   })
 
   it('resolves with non-zero exit code for failing command', async () => {
-    const result = await spawnWithSignal('sh', ['-c', 'exit 42'], AbortSignal.timeout(5_000))
+    const result = await spawnWithSignal(
+      process.execPath,
+      ['-e', 'process.exit(42)'],
+      AbortSignal.timeout(5_000),
+    )
     expect(result.exitCode).toBe(42)
   })
 
   it('rejects with AbortError when signal fires during execution', async () => {
     const controller = new AbortController()
-    const promise = spawnWithSignal('sleep', ['10'], controller.signal)
+    const promise = spawnWithSignal(
+      process.execPath,
+      ['-e', 'setTimeout(() => {}, 10_000)'],
+      controller.signal,
+    )
     controller.abort()
     await expect(promise).rejects.toThrow()
     await expect(promise).rejects.toMatchObject({ name: 'AbortError' })
@@ -30,8 +42,8 @@ describe('spawnWithSignal', () => {
 
   it('collects stderr separately from stdout', async () => {
     const result = await spawnWithSignal(
-      'sh',
-      ['-c', 'echo out; echo err >&2'],
+      process.execPath,
+      ['-e', "console.log('out'); console.error('err')"],
       AbortSignal.timeout(5_000),
     )
     expect(result.stdout.trim()).toBe('out')
@@ -40,8 +52,8 @@ describe('spawnWithSignal', () => {
 
   it('preserves output beyond the previous truncation threshold', async () => {
     const result = await spawnWithSignal(
-      'sh',
-      ['-c', "dd if=/dev/zero bs=70000 count=1 status=none | tr '\\000' x"],
+      process.execPath,
+      ['-e', "process.stdout.write('x'.repeat(70_000))"],
       AbortSignal.timeout(5_000),
     )
     expect(result.exitCode).toBe(0)
@@ -49,9 +61,13 @@ describe('spawnWithSignal', () => {
   })
 
   it('respects cwd option', async () => {
-    const result = await spawnWithSignal('pwd', [], AbortSignal.timeout(5_000), { cwd: '/tmp' })
+    const result = await spawnWithSignal(
+      process.execPath,
+      ['-e', 'console.log(process.cwd())'],
+      AbortSignal.timeout(5_000),
+      { cwd: process.cwd() },
+    )
     expect(result.exitCode).toBe(0)
-    // Resolve symlinks — on some systems /tmp → /private/tmp
-    expect(result.stdout.trim()).toMatch(/\/tmp$/)
+    expect(result.stdout.trim()).toBe(process.cwd())
   })
 })

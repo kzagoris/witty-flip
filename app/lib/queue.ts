@@ -1,28 +1,34 @@
-import path from 'node:path'
 import fs from 'node:fs'
 import { eq, and, asc, or, sql } from 'drizzle-orm'
 import { db } from '~/lib/db'
 import { conversions } from '~/lib/db/schema'
-import { incrementRateLimit } from '~/lib/rate-limit'
+import { consumeRateLimitSlot, releaseRateLimitSlot } from '~/lib/rate-limit'
 import { getConverter } from '~/lib/converters'
-import { registerAllConverters } from '~/lib/converters/register-all'
 import { getConversionBySlug } from '~/lib/conversions'
+import { getStoredInputPath, getStoredOutputPath } from '~/lib/conversion-files'
+
+export { CONVERSIONS_DIR } from '~/lib/conversion-files'
 
 const MAX_CONCURRENT_JOBS = 5
 const CONVERSION_TIMEOUT_MS = 30_000
 const DOWNLOAD_WINDOW_MS = 60 * 60 * 1000
 
-export const CONVERSIONS_DIR = path.resolve('data', 'conversions')
-
 let isProcessing = false
 let shouldProcessAgain = false
 
-function ensureDefaultConverterRegistered(toolName: string) {
-  const existingConverter = getConverter(toolName)
-  if (existingConverter) return existingConverter
+async function cleanupOutputArtifacts(...pathsToDelete: Array<string | undefined>): Promise<void> {
+  const uniquePaths = [...new Set(pathsToDelete.filter((pathValue): pathValue is string => Boolean(pathValue)))]
+  await Promise.all(uniquePaths.map(pathValue => fs.promises.rm(pathValue, { force: true }).catch(() => {})))
+}
 
-  registerAllConverters()
-  return getConverter(toolName)
+async function releaseReservedSlot(job: typeof conversions.$inferSelect): Promise<void> {
+  if (job.wasPaid !== 0 || !job.rateLimitDate) return
+  await releaseRateLimitSlot(job.ipAddress, job.rateLimitDate)
+}
+
+async function consumeReservedSlot(job: typeof conversions.$inferSelect): Promise<void> {
+  if (job.wasPaid !== 0 || !job.rateLimitDate) return
+  await consumeRateLimitSlot(job.ipAddress, job.rateLimitDate)
 }
 
 export async function enqueueJob(fileId: string): Promise<void> {
@@ -105,22 +111,28 @@ async function runConversion(job: typeof conversions.$inferSelect): Promise<void
         .update(conversions)
         .set({ status: 'failed', errorMessage: 'Unknown conversion type' })
         .where(eq(conversions.id, job.id))
+      await releaseReservedSlot(job)
       void processQueue()
       return
     }
 
-    const converter = ensureDefaultConverterRegistered(conversionMeta.toolName)
+    const converter = getConverter(conversionMeta.toolName)
     if (!converter) {
       await db
         .update(conversions)
-        .set({ status: 'failed', errorMessage: 'Converter not available' })
+        .set({
+          status: 'failed',
+          errorMessage: 'Converter not available',
+          toolName: conversionMeta.toolName,
+        })
         .where(eq(conversions.id, job.id))
+      await releaseReservedSlot(job)
       void processQueue()
       return
     }
 
-    const inputPath = path.join(CONVERSIONS_DIR, job.inputFilePath)
-    const outputPath = path.join(CONVERSIONS_DIR, job.id + '-output' + conversionMeta.targetExtension)
+    const inputPath = getStoredInputPath(job.inputFilePath)
+    const outputPath = getStoredOutputPath(job.id, conversionMeta.targetExtension)
 
     const controller = new AbortController()
     const timeoutId = setTimeout(() => controller.abort(), CONVERSION_TIMEOUT_MS)
@@ -140,17 +152,21 @@ async function runConversion(job: typeof conversions.$inferSelect): Promise<void
         }
 
         if (!outputSize) {
+          await cleanupOutputArtifacts(resultOutputPath, outputPath)
+
           await db
             .update(conversions)
             .set({
               status: 'failed',
               errorMessage: 'Conversion did not produce a downloadable file.',
+              toolName: conversionMeta.toolName,
               toolExitCode: result.exitCode,
               conversionTimeMs: result.durationMs,
               conversionCompletedAt: new Date().toISOString(),
             })
             .where(eq(conversions.id, job.id))
 
+          await releaseReservedSlot(job)
           return
         }
 
@@ -159,6 +175,7 @@ async function runConversion(job: typeof conversions.$inferSelect): Promise<void
           .set({
             status: 'completed',
             expiresAt: new Date(Date.now() + DOWNLOAD_WINDOW_MS).toISOString(),
+            toolName: conversionMeta.toolName,
             toolExitCode: result.exitCode,
             conversionTimeMs: result.durationMs,
             outputFileSizeBytes: outputSize,
@@ -166,23 +183,27 @@ async function runConversion(job: typeof conversions.$inferSelect): Promise<void
           })
           .where(eq(conversions.id, job.id))
 
-        if (job.wasPaid === 0) {
-          await incrementRateLimit(job.ipAddress)
-        }
+        await consumeReservedSlot(job)
       } else {
+        await cleanupOutputArtifacts(result.outputPath, outputPath)
+
         await db
           .update(conversions)
           .set({
             status: 'failed',
             errorMessage: result.errorMessage ?? 'Conversion failed',
+            toolName: conversionMeta.toolName,
             toolExitCode: result.exitCode,
             conversionTimeMs: result.durationMs,
             conversionCompletedAt: new Date().toISOString(),
           })
           .where(eq(conversions.id, job.id))
+
+        await releaseReservedSlot(job)
       }
     } catch (err) {
       clearTimeout(timeoutId)
+      await cleanupOutputArtifacts(outputPath)
 
       if (err instanceof Error && err.name === 'AbortError') {
         await db
@@ -190,18 +211,22 @@ async function runConversion(job: typeof conversions.$inferSelect): Promise<void
           .set({
             status: 'timeout',
             errorMessage: 'Conversion timed out. The file may be too complex.',
+            toolName: conversionMeta.toolName,
             conversionCompletedAt: new Date().toISOString(),
           })
           .where(eq(conversions.id, job.id))
+        await releaseReservedSlot(job)
       } else {
         await db
           .update(conversions)
           .set({
             status: 'failed',
             errorMessage: err instanceof Error ? err.message : 'Unknown error',
+            toolName: conversionMeta.toolName,
             conversionCompletedAt: new Date().toISOString(),
           })
           .where(eq(conversions.id, job.id))
+        await releaseReservedSlot(job)
       }
     }
   } finally {

@@ -178,34 +178,42 @@ Each converter wrapper gets a test file verifying (with mocked `spawnWithSignal`
 
 ### Architecture Decision
 
-- **Server functions** (`createServerFn`): upload, convert, conversion-status, create-checkout
-- **Raw h3 handlers**: download (binary streaming), webhook/stripe (raw body for signature)
+- **Server functions** (`createServerFn`): upload, convert, conversion-status, rate-limit-status, create-checkout
+- **File-based route handlers** (`server.handlers` on `createFileRoute`): download (binary streaming), webhook/stripe (raw body for signature)
 
-### 3.1 Custom Server Entry (`app/server/entry.ts`) — **new file**
+### 3.1 API Surface Contract
 
-- Compose h3 router mounting download + webhook handlers
-- Pass all other requests to TanStack Start's SSR handler
-- Update `vite.config.ts` to reference custom entry
+- No custom server entry is needed for Phase 3
+- Use TanStack Start server functions for app-internal RPC flows from the UI
+- Use file-based route handlers for binary download and Stripe webhook verification
+- If the spec must preserve stable public REST endpoints separate from TanStack RPC, add thin HTTP aliases later or update the spec to reflect the chosen pattern
 
 ### 3.2 Upload (`app/server/api/upload.ts`)
 
 - `createServerFn({ method: 'POST' })` accepting FormData
 - Generate UUID via `crypto.randomUUID()`
-- Validate file (size, magic bytes, conversion type)
+- Validate file (server-side size limit, magic bytes, conversion type)
 - Save to `data/conversions/{uuid}.{ext}`
 - Insert `conversions` row with status `uploaded`
 - Resolve client IP via `app/lib/request-ip.ts`; never read `X-Forwarded-For` directly
+- Roll back the written file if the DB insert fails after the filesystem write succeeds
 - Return `{ fileId, status: 'uploaded' }`
 
 ### 3.3 Convert (`app/server/api/convert.ts`)
 
 - `createServerFn({ method: 'POST' })` accepting `{ fileId }`
-- Resolve client IP via shared helper, check rate limit, then enqueue or return `payment_required`
+- Treat duplicate calls idempotently: return current state for `queued`, `converting`, `completed`, `expired`, `payment_required`, or `pending_payment`
+- Resolve client IP via shared helper, reserve a free slot atomically, then enqueue or return `payment_required`
+- Persist the reserved quota date on the conversion row so successful/failed queued jobs can consume or release the correct daily bucket even across UTC midnight
+- Phase 3 is not complete until the free-tier concurrency race is closed; do not defer it as a launch risk
 
 ### 3.4 Conversion Status (`app/server/api/conversion-status.ts`)
 
 - `createServerFn({ method: 'GET' })` accepting `{ fileId }`
-- Return `{ fileId, status, downloadUrl?, expiresAt?, errorMessage? }`
+- Return `{ fileId, status, progress, downloadUrl?, expiresAt?, errorCode?, message? }`
+- If DB state is `completed`, verify the output artifact still exists before returning a download URL
+- If artifact is missing, return a user-safe `artifact_missing` error instead of a broken download link
+- Use a coarse status-derived `progress` value in Phase 3; richer converter-native progress can come later without breaking the response contract
 
 ### 3.5 Rate Limit Status (`app/server/api/rate-limit-status.ts`) — **new file**
 
@@ -213,11 +221,32 @@ Each converter wrapper gets a test file verifying (with mocked `spawnWithSignal`
 - Resolve client IP via shared helper and return `{ remaining, limit, resetAt }`
 - Uses the same trusted-proxy policy as upload/convert so UI status matches enforcement
 
-### 3.6 Download (`app/server/api/download.ts`)
+### 3.6 Download (`app/routes/api/download/$fileId.tsx`)
 
-- Raw h3 handler at `GET /api/download/:fileId`
+- File-based route handler at `GET /api/download/:fileId`
 - Stream output file with proper Content-Type + Content-Disposition
 - Reject expired or non-completed files
+- Sanitize the download filename and send both `filename=` and `filename*=` forms where practical
+
+### 3.7 Create Checkout (`app/server/api/create-checkout.ts`)
+
+- `createServerFn({ method: 'POST' })` accepting `{ fileId }`
+- Allow both `payment_required` and `pending_payment` so users can retry checkout cleanly
+- Reuse an existing open Stripe Checkout session when available
+- Return `{ checkoutUrl, sessionId, fileId }`
+
+### 3.8 Stripe Webhook (`app/routes/api/webhook/stripe.tsx`)
+
+- File-based route handler at `POST /api/webhook/stripe`
+- Verify Stripe signature from the raw request body
+- Handle `checkout.session.completed`
+- Return `400` on signature failure and `500` on verified downstream-processing failures so Stripe can retry
+
+### 3.9 Health (`app/routes/api/health.tsx`) — **new file**
+
+- File-based route handler at `GET /api/health`
+- Minimal liveness response for Docker/Caddy health checks
+- Returns `{ status: 'ok' }`
 
 ---
 
@@ -226,23 +255,16 @@ Each converter wrapper gets a test file verifying (with mocked `spawnWithSignal`
 ### 4.1 Stripe Client (`app/lib/stripe.ts`)
 
 - Initialize Stripe SDK
-- `createCheckoutSession(fileId, conversionType, ip)` — guest mode, $0.49, 30min expiry
+- `createCheckoutSession(fileId)` — guest mode, $0.49, 30min expiry, reusable open sessions
 - `verifyWebhookSignature(rawBody, signature)`
 - Insert `payments` row, update conversion to `pending_payment`
+- `handleCheckoutCompleted(session)` updates payment + conversion records idempotently and enqueues only when appropriate
 
-### 4.2 Create Checkout (`app/server/api/create-checkout.ts`)
-
-- Server function: verify conversion is `payment_required`, create session, return URL
-
-### 4.3 Stripe Webhook (`app/server/api/webhook/stripe.ts`)
-
-- Raw h3 handler at `POST /api/webhook/stripe`
-- Verify signature, handle `checkout.session.completed`
-- Update payment + conversion records, enqueue job
-
-### 4.4 Stripe Unit Tests (`tests/unit/stripe.test.ts`)
+### 4.2 Stripe Unit Tests (`tests/unit/stripe.test.ts`)
 
 - Generates checkout session with correct amount ($0.49) and metadata (fileId, conversionType)
+- Reuses open checkout sessions when possible
+- Webhook completion is idempotent across duplicate Stripe deliveries
 - Webhook signature verification rejects tampered payloads
 - Idempotent handler ignores duplicate `checkout.session.completed` events
 - `createCheckoutSession` only works for `payment_required` conversions
@@ -447,7 +469,7 @@ Unit tests are written alongside each module (Phases 1-4). Phase 9 focuses on cr
 - Add `package.json` scripts: `npm test`, `npm run test:watch`, `npm run test:fixtures`
 - Create `vitest.config.ts` for Node environment, setup hooks, aliases, and split fixture test inclusion
 - Create `tests/setup.ts` to isolate temp directories, SQLite state, mocks, and fake timers
-- Create `tests/helpers/create-test-app.ts` to exercise mixed TanStack `createServerFn` and raw h3 handlers in one app instance via `supertest`
+- Create `tests/helpers/create-test-app.ts` to exercise mixed TanStack `createServerFn` and file-based route handlers in one app instance via `supertest`
 - Keep fixture tests opt-in so the default test run does not require Docker conversion tools
 
 ### 9.1 Integration Tests
@@ -459,13 +481,16 @@ Test the API route flow end-to-end with a real SQLite database but mocked conver
 | **Happy path**                | Upload file → convert → poll status until completed → download. Verify response shapes, status transitions, and Content-Disposition header.                    |
 | **Rate limit enforcement**    | Two free conversions succeed. Third returns 402 with `payment_required`. Verify rate_limits row incremented correctly.                                         |
 | **Paid conversion flow**      | Upload → convert (returns 402) → create-checkout → simulate webhook → verify conversion starts. Payment row created with correct status.                       |
+| **Duplicate convert retry**   | Call convert repeatedly for the same file. Verify already-queued/converting/completed/payment states return the current state instead of double-enqueueing.     |
 | **Failed conversion**         | Mock converter returns non-zero exit code. Verify status=failed, error message present, free quota not consumed, no downloadable artifact.                     |
 | **Timeout**                   | Mock converter exceeds 30s. Verify status=timeout, process killed, cleanup runs.                                                                               |
 | **File validation rejection** | Upload with wrong magic bytes. Verify 400 error with clear message.                                                                                            |
 | **Concurrent queue limit**    | Enqueue 6 jobs. Verify 5 run concurrently, 6th remains queued.                                                                                                 |
 | **Download expiry**           | Set expires_at in the past. Verify download returns 404/410.                                                                                                   |
+| **Missing artifact**          | Mark conversion completed in DB but delete the output file. Verify status/download return a user-safe error instead of a broken download link.                |
 | **Rate limit status**         | Call `GET /api/rate-limit-status`. Verify `{ remaining, limit, resetAt }` matches current DB state for the resolved client IP.                                 |
 | **Trusted proxy handling**    | Spoof `X-Forwarded-For` from an untrusted peer and verify it is ignored. Send the same header from a trusted Caddy peer and verify the leftmost value is used. |
+| **Webhook idempotency**       | Deliver the same `checkout.session.completed` event twice. Verify the payment/conversion state stays correct and the job is not duplicated.                    |
 
 ### 9.2 Fixture Tests (Conversion Quality)
 
@@ -565,6 +590,7 @@ that span multiple modules.
 | `app/lib/file-validation.ts`          | Implement         | 1     |
 | `app/lib/rate-limit.ts`               | Implement         | 1     |
 | `app/lib/queue.ts`                    | Implement         | 1     |
+| `app/lib/request-ip.ts`               | **Create**        | 1     |
 | `app/lib/converters/index.ts`         | Implement         | 2     |
 | `app/lib/converters/pandoc.ts`        | Implement         | 2     |
 | `app/lib/converters/djvulibre.ts`     | Implement         | 2     |
@@ -572,15 +598,17 @@ that span multiple modules.
 | `app/lib/converters/weasyprint.ts`    | Implement         | 2     |
 | `app/lib/converters/pdflatex.ts`      | **Create**        | 2     |
 | `app/lib/converters/libreoffice.ts`   | Implement         | 2     |
-| `app/server/entry.ts`                 | **Create**        | 3     |
 | `app/server/api/upload.ts`            | Implement         | 3     |
 | `app/server/api/convert.ts`           | Implement         | 3     |
 | `app/server/api/conversion-status.ts` | Implement         | 3     |
 | `app/server/api/rate-limit-status.ts` | **Create**        | 3     |
-| `app/server/api/download.ts`          | Implement         | 3     |
+| `app/server/api/create-checkout.ts`   | Implement         | 3     |
+| `app/routes/api/download/$fileId.tsx` | **Create**        | 3     |
+| `app/routes/api/webhook/stripe.tsx`   | **Create**        | 3     |
+| `app/server/api/download.ts`          | Delete            | 3     |
+| `app/server/api/webhook/stripe.ts`    | Delete            | 3     |
 | `app/lib/stripe.ts`                   | Implement         | 4     |
-| `app/server/api/create-checkout.ts`   | Implement         | 4     |
-| `app/server/api/webhook/stripe.ts`    | Implement         | 4     |
+| `tests/unit/request-ip.test.ts`       | **Create**        | 1     |
 | `app/styles/globals.css`              | Implement         | 5     |
 | `app/components/*.tsx` (9 files)      | Implement         | 5     |
 | `app/routes/__root.tsx`               | Modify            | 6     |

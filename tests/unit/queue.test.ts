@@ -1,4 +1,4 @@
-import { writeFileSync } from 'node:fs'
+import fs, { writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { randomUUID } from 'node:crypto'
 import { and, eq } from 'drizzle-orm'
@@ -64,18 +64,30 @@ async function waitForStatus(id: string, status: string, timeoutMs = 4_000) {
   throw new Error(`Job ${id} stuck at "${row?.status}", expected "${status}"`)
 }
 
-async function getRateLimitCount(ip: string) {
-  const today = new Date().toISOString().slice(0, 10)
+async function getRateLimitCount(ip: string, date = new Date().toISOString().slice(0, 10)) {
   const [row] = await db
     .select()
     .from(schema.rateLimits)
     .where(
       and(
         eq(schema.rateLimits.ipAddress, ip),
-        eq(schema.rateLimits.date, today),
+        eq(schema.rateLimits.date, date),
       ),
     )
   return row?.freeConversionCount ?? 0
+}
+
+async function getReservedRateLimitCount(ip: string, date = new Date().toISOString().slice(0, 10)) {
+  const [row] = await db
+    .select()
+    .from(schema.rateLimits)
+    .where(
+      and(
+        eq(schema.rateLimits.ipAddress, ip),
+        eq(schema.rateLimits.date, date),
+      ),
+    )
+  return row?.reservedFreeSlots ?? 0
 }
 
 // ---------------------------------------------------------------------------
@@ -230,6 +242,7 @@ describe('runConversion — success path', () => {
   it('marks job completed with size, timing, expiry; increments free quota when wasPaid=0', async () => {
     const id = randomUUID()
     const outputContent = '# Hello Markdown'
+    const today = new Date().toISOString().slice(0, 10)
 
     registerConverter('pandoc', {
       convert: (_input, output) => {
@@ -238,7 +251,10 @@ describe('runConversion — success path', () => {
       },
     })
 
-    await seed({ id, status: 'uploaded', wasPaid: 0 })
+    const { reserveRateLimitSlot } = await import('~/lib/rate-limit')
+    await reserveRateLimitSlot('127.0.0.1', today)
+
+    await seed({ id, status: 'uploaded', wasPaid: 0, rateLimitDate: today })
     // Provide a stub input file so path resolution inside runConversion is consistent.
     writeFileSync(join(CONVERSIONS_DIR, `${id}.docx`), 'stub')
 
@@ -263,6 +279,8 @@ describe('runConversion — success path', () => {
 
     // Free quota must be incremented for unpaid conversions.
     expect(await getRateLimitCount('127.0.0.1')).toBe(1)
+    expect(await getReservedRateLimitCount('127.0.0.1', '2024-06-15')).toBe(0)
+    expect(row?.toolName).toBe('pandoc')
   })
 
   it('does NOT increment free quota when wasPaid=1', async () => {
@@ -289,24 +307,36 @@ describe('runConversion — success path', () => {
 
 describe('runConversion — failure path', () => {
   it('marks job failed when converter returns success=false; no quota increment', async () => {
+    const id = await seed({ status: 'uploaded', rateLimitDate: new Date().toISOString().slice(0, 10) })
+    const partialOutputPath = join(CONVERSIONS_DIR, `${id}-output.md`)
+
     registerConverter('pandoc', {
-      convert: () => Promise.resolve({
-        success: false,
-        outputPath: '',
-        exitCode: 2,
-        errorMessage: 'pandoc exploded',
-        durationMs: 7,
-      }),
+      convert: () => {
+        writeFileSync(partialOutputPath, 'partial')
+        return Promise.resolve({
+          success: false,
+          outputPath: partialOutputPath,
+          exitCode: 2,
+          errorMessage: 'pandoc exploded',
+          durationMs: 7,
+        })
+      },
     })
 
-    const id = await seed({ status: 'uploaded' })
+    const { reserveRateLimitSlot } = await import('~/lib/rate-limit')
+    await reserveRateLimitSlot('127.0.0.1', new Date().toISOString().slice(0, 10))
+
     await enqueueJob(id)
     const row = await waitForStatus(id, 'failed')
 
     expect(row?.status).toBe('failed')
     expect(row?.errorMessage).toBe('pandoc exploded')
     expect(row?.toolExitCode).toBe(2)
+    expect(row?.toolName).toBe('pandoc')
     expect(await getRateLimitCount('127.0.0.1')).toBe(0)
+    expect(await getReservedRateLimitCount('127.0.0.1')).toBe(0)
+
+    expect(() => fs.statSync(partialOutputPath)).toThrow()
   })
 })
 
@@ -315,10 +345,16 @@ describe('runConversion — failure path', () => {
 describe('runConversion — timeout path', () => {
   it('marks job timeout when converter is aborted after 30 s (fake timers)', async () => {
     vi.useFakeTimers()
+    const id = await seed({ status: 'uploaded', rateLimitDate: '2024-06-15' })
+    const partialOutputPath = join(CONVERSIONS_DIR, `${id}-output.md`)
+
+    const { reserveRateLimitSlot } = await import('~/lib/rate-limit')
+    await reserveRateLimitSlot('127.0.0.1', '2024-06-15')
 
     registerConverter('pandoc', {
-      convert: (_input, _output, signal) =>
+      convert: (_input, output, signal) =>
         new Promise<ConvertResult>((_, reject) => {
+          writeFileSync(output, 'partial')
           signal.addEventListener('abort', () => {
             const err = new Error('aborted')
             err.name = 'AbortError'
@@ -327,7 +363,6 @@ describe('runConversion — timeout path', () => {
         }),
     })
 
-    const id = await seed({ status: 'uploaded' })
     await enqueueJob(id)
 
     // Advance fake time by 30 s.  vi.advanceTimersByTimeAsync processes pending
@@ -340,6 +375,9 @@ describe('runConversion — timeout path', () => {
 
     const row = await waitForStatus(id, 'timeout', 4_000)
     expect(row?.status).toBe('timeout')
+    expect(row?.toolName).toBe('pandoc')
+    expect(await getReservedRateLimitCount('127.0.0.1')).toBe(0)
+    expect(() => fs.statSync(partialOutputPath)).toThrow()
   })
 })
 
@@ -360,65 +398,7 @@ describe('runConversion — missing metadata / converter', () => {
     await processQueue()
     const row = await waitForStatus(id, 'failed')
     expect(row?.status).toBe('failed')
-    expect(row?.errorMessage).not.toMatch(/not available/i)
-  })
-})
-
-describe('runConversion — default converter bootstrap', () => {
-  it('registers default converters on demand when the registry is empty', async () => {
-    vi.resetModules()
-
-    const sandbox = createTestSandbox()
-    const { db: isolatedDb, schema: isolatedSchema } = await setupTestDb(sandbox)
-    const fallbackConvert = vi.fn((_input: string, output: string) =>
-      Promise.resolve({
-        success: false,
-        outputPath: output,
-        exitCode: 77,
-        errorMessage: 'fallback converter used',
-        durationMs: 5,
-      } satisfies ConvertResult))
-
-    vi.doMock('~/lib/converters/register-all', async () => {
-      const convertersMod = await import('~/lib/converters/index')
-      return {
-        registerAllConverters: () => {
-          convertersMod.registerConverter('pandoc', { convert: fallbackConvert })
-        },
-      }
-    })
-
-    const queueMod = await import('~/lib/queue')
-    const fileId = randomUUID()
-    await isolatedDb.insert(isolatedSchema.conversions).values({
-      id: fileId,
-      originalFilename: 'test.docx',
-      sourceFormat: 'docx',
-      targetFormat: 'markdown',
-      conversionType: 'docx-to-markdown',
-      ipAddress: '127.0.0.1',
-      inputFilePath: `${fileId}.docx`,
-      wasPaid: 0,
-      status: 'queued',
-    } as Parameters<typeof isolatedDb.insert>[0] extends { values: (v: infer V) => unknown } ? V : never)
-
-    writeFileSync(join(queueMod.CONVERSIONS_DIR, `${fileId}.docx`), 'stub')
-
-    await queueMod.processQueue()
-
-    const deadline = Date.now() + 4_000
-    let row: typeof isolatedSchema.conversions.$inferSelect | undefined
-    while (Date.now() < deadline) {
-      ;[row] = await isolatedDb
-        .select()
-        .from(isolatedSchema.conversions)
-        .where(eq(isolatedSchema.conversions.id, fileId))
-      if (row?.status === 'failed') break
-      await new Promise<void>(r => setTimeout(r, 15))
-    }
-
-    expect(fallbackConvert).toHaveBeenCalledTimes(1)
-    expect(row?.errorMessage).toBe('fallback converter used')
+    expect(row?.errorMessage).toMatch(/not available/i)
   })
 })
 

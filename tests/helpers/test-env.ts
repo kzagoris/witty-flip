@@ -55,6 +55,7 @@ export async function setupTestDb(_sandbox: TestSandbox) {
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       ip_address TEXT NOT NULL,
       free_conversion_count INTEGER DEFAULT 0,
+      reserved_free_slots INTEGER DEFAULT 0,
       date TEXT NOT NULL,
       UNIQUE(ip_address, date)
     )
@@ -88,6 +89,7 @@ export async function setupTestDb(_sandbox: TestSandbox) {
       input_file_path TEXT NOT NULL,
       input_file_size_bytes INTEGER,
       output_file_size_bytes INTEGER,
+      rate_limit_date TEXT,
       tool_name TEXT,
       tool_exit_code INTEGER,
       conversion_time_ms INTEGER,
