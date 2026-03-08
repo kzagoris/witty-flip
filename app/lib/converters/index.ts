@@ -19,3 +19,9 @@ export function getConverter(toolName: string): Converter | undefined {
 export function registerConverter(toolName: string, converter: Converter): void {
   converterRegistry.set(toolName, converter)
 }
+
+export function registerIfAbsent(toolName: string, converter: Converter): void {
+  if (!converterRegistry.has(toolName)) {
+    converterRegistry.set(toolName, converter)
+  }
+}
