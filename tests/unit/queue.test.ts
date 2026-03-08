@@ -360,7 +360,65 @@ describe('runConversion — missing metadata / converter', () => {
     await processQueue()
     const row = await waitForStatus(id, 'failed')
     expect(row?.status).toBe('failed')
-    expect(row?.errorMessage).toMatch(/not available/i)
+    expect(row?.errorMessage).not.toMatch(/not available/i)
+  })
+})
+
+describe('runConversion — default converter bootstrap', () => {
+  it('registers default converters on demand when the registry is empty', async () => {
+    vi.resetModules()
+
+    const sandbox = createTestSandbox()
+    const { db: isolatedDb, schema: isolatedSchema } = await setupTestDb(sandbox)
+    const fallbackConvert = vi.fn((_input: string, output: string) =>
+      Promise.resolve({
+        success: false,
+        outputPath: output,
+        exitCode: 77,
+        errorMessage: 'fallback converter used',
+        durationMs: 5,
+      } satisfies ConvertResult))
+
+    vi.doMock('~/lib/converters/register-all', async () => {
+      const convertersMod = await import('~/lib/converters/index')
+      return {
+        registerAllConverters: () => {
+          convertersMod.registerConverter('pandoc', { convert: fallbackConvert })
+        },
+      }
+    })
+
+    const queueMod = await import('~/lib/queue')
+    const fileId = randomUUID()
+    await isolatedDb.insert(isolatedSchema.conversions).values({
+      id: fileId,
+      originalFilename: 'test.docx',
+      sourceFormat: 'docx',
+      targetFormat: 'markdown',
+      conversionType: 'docx-to-markdown',
+      ipAddress: '127.0.0.1',
+      inputFilePath: `${fileId}.docx`,
+      wasPaid: 0,
+      status: 'queued',
+    } as Parameters<typeof isolatedDb.insert>[0] extends { values: (v: infer V) => unknown } ? V : never)
+
+    writeFileSync(join(queueMod.CONVERSIONS_DIR, `${fileId}.docx`), 'stub')
+
+    await queueMod.processQueue()
+
+    const deadline = Date.now() + 4_000
+    let row: typeof isolatedSchema.conversions.$inferSelect | undefined
+    while (Date.now() < deadline) {
+      ;[row] = await isolatedDb
+        .select()
+        .from(isolatedSchema.conversions)
+        .where(eq(isolatedSchema.conversions.id, fileId))
+      if (row?.status === 'failed') break
+      await new Promise<void>(r => setTimeout(r, 15))
+    }
+
+    expect(fallbackConvert).toHaveBeenCalledTimes(1)
+    expect(row?.errorMessage).toBe('fallback converter used')
   })
 })
 

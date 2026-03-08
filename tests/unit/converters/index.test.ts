@@ -33,3 +33,35 @@ describe('converter registry', () => {
     expect(getConverter('')).toBeUndefined()
   })
 })
+
+describe('registerAllConverters', () => {
+  beforeEach(() => {
+    vi.resetModules()
+  })
+
+  const EXPECTED_TOOLS = ['pandoc', 'djvulibre', 'calibre', 'weasyprint', 'pdflatex', 'libreoffice']
+
+  it('registers all 6 converters', async () => {
+    const { registerAllConverters } = await import('~/lib/converters/register-all')
+    const { getConverter } = await import('~/lib/converters/index')
+
+    registerAllConverters()
+
+    for (const tool of EXPECTED_TOOLS) {
+      expect(getConverter(tool), `${tool} should be registered`).toBeDefined()
+    }
+  })
+
+  it('is idempotent — repeated calls do not throw or overwrite', async () => {
+    const { registerAllConverters } = await import('~/lib/converters/register-all')
+    const { getConverter } = await import('~/lib/converters/index')
+
+    registerAllConverters()
+    const first = getConverter('pandoc')
+
+    registerAllConverters()
+    const second = getConverter('pandoc')
+
+    expect(first).toBe(second)
+  })
+})

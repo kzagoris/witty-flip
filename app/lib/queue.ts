@@ -5,6 +5,7 @@ import { db } from '~/lib/db'
 import { conversions } from '~/lib/db/schema'
 import { incrementRateLimit } from '~/lib/rate-limit'
 import { getConverter } from '~/lib/converters'
+import { registerAllConverters } from '~/lib/converters/register-all'
 import { getConversionBySlug } from '~/lib/conversions'
 
 const MAX_CONCURRENT_JOBS = 5
@@ -15,6 +16,14 @@ export const CONVERSIONS_DIR = path.resolve('data', 'conversions')
 
 let isProcessing = false
 let shouldProcessAgain = false
+
+function ensureDefaultConverterRegistered(toolName: string) {
+  const existingConverter = getConverter(toolName)
+  if (existingConverter) return existingConverter
+
+  registerAllConverters()
+  return getConverter(toolName)
+}
 
 export async function enqueueJob(fileId: string): Promise<void> {
   await db
@@ -100,7 +109,7 @@ async function runConversion(job: typeof conversions.$inferSelect): Promise<void
       return
     }
 
-    const converter = getConverter(conversionMeta.toolName)
+    const converter = ensureDefaultConverterRegistered(conversionMeta.toolName)
     if (!converter) {
       await db
         .update(conversions)

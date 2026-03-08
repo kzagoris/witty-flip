@@ -106,6 +106,21 @@ describe('getAllConversionTypes', () => {
     }
   })
 
+  it('html-to-pdf copy does not claim unimplemented network isolation or SSRF guarantees', () => {
+    const htmlToPdf = getConversionBySlug('html-to-pdf')
+    expect(htmlToPdf).toBeDefined()
+
+    const copy = [
+      htmlToPdf!.seoContent,
+      ...htmlToPdf!.faq.map((item) => `${item.question} ${item.answer}`),
+    ].join(' ').toLowerCase()
+
+    expect(copy).not.toContain('ssrf')
+    expect(copy).not.toContain('no network access')
+    expect(copy).not.toContain('external stylesheets referenced by url are not loaded')
+    expect(copy).not.toContain('external resource loading')
+  })
+
   it('every conversion tool name is a non-empty string', () => {
     const tools = getAllConversionTypes().map((ct) => ct.toolName)
     for (const tool of tools) {
