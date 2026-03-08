@@ -633,6 +633,215 @@ wittyflip/
 - Use weasyprint for HTML -> PDF in v1 to avoid the operational overhead of a browser runtime
 - Revisit Puppeteer only if the output quality from weasyprint is unacceptable for real samples
 
+## Testing
+
+### Strategy
+
+Testing is phased to match development velocity. v1 focuses on pipeline reliability (the upload→convert→download flow) and conversion quality. Browser-based E2E tests and CI automation are deferred to post-launch.
+
+### Tooling
+
+| Tool | Purpose |
+|---|---|
+| **Vitest** | Unit and integration tests. Fast, Vite-native, compatible with TanStack Start. |
+| **supertest** | HTTP-level integration tests against API routes without a running server. |
+| **Fixture files** | Real sample documents per format pair for conversion quality validation. |
+| **Playwright** | E2E browser tests (post-launch). |
+
+### v1 Test Scope
+
+#### Unit Tests
+
+Test individual modules in isolation with mocked dependencies:
+
+| Module | Key Test Cases |
+|---|---|
+| `file-validation.ts` | Accepts valid magic bytes for each format. Rejects spoofed extensions. Rejects files > 10MB. Handles zero-byte and truncated files. |
+| `rate-limit.ts` | Returns correct remaining count. Resets at UTC midnight. Increments only on successful free conversions. Paid conversions bypass quota. |
+| `queue.ts` | Respects max 5 concurrent jobs. Times out after 30 seconds. Re-entrant guard prevents double-processing. Status transitions follow the lifecycle. |
+| `stripe.ts` | Generates checkout session with correct amount/metadata. Webhook signature verification rejects tampered payloads. Idempotent handler ignores duplicate events. |
+| `conversions.ts` | Lookup by slug returns correct conversion definition. All 7 conversion types are registered. Invalid slugs return undefined. |
+| Converter wrappers | Each wrapper builds the correct command and arguments. Handles non-zero exit codes. Respects AbortSignal for cancellation. |
+
+#### Integration Tests
+
+Test the API route flow end-to-end with a real SQLite database but mocked converter subprocesses:
+
+| Flow | What It Covers |
+|---|---|
+| **Happy path** | Upload file → convert → poll status until completed → download. Verify response shapes, status transitions, and Content-Disposition header. |
+| **Rate limit enforcement** | Two free conversions succeed. Third returns 402 with `payment_required`. Verify rate_limits row incremented correctly. |
+| **Paid conversion flow** | Upload → convert (returns 402) → create-checkout → simulate webhook → verify conversion starts. Payment row created with correct status. |
+| **Failed conversion** | Mock converter returns non-zero exit code. Verify status=failed, error message present, free quota not consumed, no downloadable artifact. |
+| **Timeout** | Mock converter exceeds 30s. Verify status=timeout, process killed, cleanup runs. |
+| **File validation rejection** | Upload with wrong magic bytes. Verify 400 error with clear message. |
+| **Concurrent queue limit** | Enqueue 6 jobs. Verify 5 run concurrently, 6th remains queued. |
+| **Download expiry** | Set expires_at in the past. Verify download returns 404/410. |
+
+#### Fixture Tests (Conversion Quality)
+
+Each of the 7 format pairs has a fixture matrix validated before launch:
+
+| Fixture Type | Purpose |
+|---|---|
+| Simple text-only | Baseline: plain paragraphs convert correctly |
+| Headings + lists | Structure preservation (H1-H3, ordered/unordered lists) |
+| Tables / structured content | Table rendering in target format |
+| Embedded images / attachments | Image extraction or embedding where the format supports it |
+| Corrupted / invalid file | Converter fails gracefully with a clear error, no partial output |
+
+**Pass criteria:**
+- Conversion completes within 30 seconds for files under 10MB
+- Output opens in the target format's standard reader/editor
+- Text-based conversions preserve primary document text and structure
+- Failed conversions surface a clear message and leave no downloadable artifact
+
+Fixture files are committed to the repository under `tests/fixtures/{conversion-type}/`.
+
+#### Test Execution
+
+All v1 tests run locally via `npm test`. No CI pipeline required for v1.
+
+```bash
+npm test              # Run all unit + integration tests
+npm run test:fixtures # Run fixture/conversion quality tests (requires Docker with conversion tools)
+```
+
+### Post-Launch Testing
+
+| Addition | When |
+|---|---|
+| **E2E browser tests** | After UI is stable. Playwright tests covering: upload drag-and-drop, progress polling, download, payment prompt, mobile viewport. |
+| **CI pipeline** | After launch. GitHub Actions with Docker-based runner for integration + fixture tests on every PR. |
+| **Load testing** | After initial traffic. Validate VPS handles concurrent uploads and conversions under realistic load. |
+
+## Observability
+
+### Structured Logging
+
+**Library:** Pino (JSON output to stdout, collected by Docker).
+
+| Field | Description |
+|---|---|
+| `timestamp` | ISO 8601 timestamp |
+| `level` | Log level (info, warn, error) |
+| `msg` | Human-readable message |
+| `conversionId` | UUID linking all log entries for a single conversion job |
+| `requestId` | UUID per HTTP request for tracing |
+| `ip` | Client IP (hashed or truncated for privacy in logs) |
+| `conversionType` | e.g., `docx-to-markdown` |
+| `durationMs` | Processing time for timed operations |
+| `error` | Error object with message and stack (error level only) |
+
+**Log points:**
+- Request received (info): method, path, IP
+- File uploaded (info): conversionId, format, file size
+- Rate limit checked (info): IP, remaining quota
+- Conversion started (info): conversionId, tool name
+- Conversion completed (info): conversionId, duration, output size
+- Conversion failed (error): conversionId, tool exit code, error message
+- Payment received (info): conversionId, Stripe session ID, amount
+- File cleanup (info): number of files deleted, disk space reclaimed
+
+**Development:** Use `pino-pretty` for human-readable console output in dev mode.
+
+### Health Check
+
+```
+GET /health
+```
+
+Returns `200 OK` when the application is running and SQLite is accessible. Returns `503 Service Unavailable` otherwise.
+
+```json
+{ "status": "ok", "uptime": 3600 }
+```
+
+Used by:
+- **UptimeRobot** (free tier) for external uptime monitoring
+- **Docker HEALTHCHECK** directive for container restart on failure
+
+### Metrics Endpoint
+
+```
+GET /metrics
+Authorization: Bearer <METRICS_API_KEY>
+```
+
+Returns operational metrics for alerting scripts and manual inspection. Protected by a shared API key (set via environment variable `METRICS_API_KEY`).
+
+```json
+{
+  "disk": {
+    "conversionsDir": {
+      "usedBytes": 52428800,
+      "usedPercent": 12.5,
+      "fileCount": 47
+    }
+  },
+  "queue": {
+    "activeJobs": 3,
+    "queuedJobs": 1,
+    "maxConcurrent": 5
+  },
+  "conversions": {
+    "last1h": {
+      "total": 42,
+      "successful": 38,
+      "failed": 3,
+      "timeout": 1,
+      "successRate": 90.5,
+      "avgDurationMs": 4200
+    },
+    "lastSuccessfulAt": "2026-03-08T14:32:00Z"
+  },
+  "uptime": 86400,
+  "timestamp": "2026-03-08T15:00:00Z"
+}
+```
+
+### Conversion Analytics
+
+The `conversions` table serves as the analytics store. Key queries for operational insight:
+
+| Metric | Query Basis |
+|---|---|
+| Success rate by format | `GROUP BY conversion_type, status` |
+| Average conversion time | `AVG(conversion_time_ms) GROUP BY conversion_type` |
+| Error breakdown | `GROUP BY conversion_type, error_message WHERE status = 'failed'` |
+| Paid vs free ratio | `GROUP BY was_paid` |
+| Hourly/daily volume | `GROUP BY strftime('%Y-%m-%d %H', created_at)` |
+| Slowest conversions | `ORDER BY conversion_time_ms DESC LIMIT 10` |
+
+No external analytics dashboard for v1. Query SQLite directly via SSH or build simple admin queries as needed.
+
+### Alerting
+
+A lightweight Node.js script runs on the VPS via cron (every 5 minutes), queries the `/metrics` endpoint, and sends email alerts via SMTP (e.g., Postmark free tier) when thresholds are breached.
+
+#### Alert Thresholds
+
+| Condition | Threshold | Severity |
+|---|---|---|
+| Disk usage | > 80% of conversions directory | Critical |
+| Queue depth | > 20 queued jobs | Warning |
+| Error rate | > 25% of conversions in the last hour | Critical |
+| No successful conversion | > 30 minutes since last success (while jobs exist) | Warning |
+| App down | /health returns non-200 | Critical |
+
+#### Alert Configuration
+
+```
+ALERT_EMAIL_TO=admin@wittyflip.com
+ALERT_SMTP_HOST=smtp.postmarkapp.com
+ALERT_SMTP_PORT=587
+ALERT_SMTP_USER=<postmark-api-key>
+```
+
+Alerts include: metric name, current value, threshold, timestamp, and link to VPS for investigation.
+
+**Deduplication:** Suppress repeated alerts for the same condition within a 1-hour window to avoid alert fatigue.
+
 ## Open Questions & Risks
 
 ### Open Questions
