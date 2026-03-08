@@ -64,16 +64,20 @@ WittyFlip is an online document conversion service (DOCX->Markdown, DJVU->PDF, e
 - `enqueueJob(fileId)` — sets status to `queued`, calls `processQueue()`
 - `processQueue()` — if `converting` count < 5, dequeue oldest `queued` job
 - `startConversion(fileId)` — sets `converting`, calls converter, handles success/failure/timeout
+- Queue owns timeout via `AbortController` + `AbortSignal`; converters must not implement their own timeout policy but instead listen to the provided `AbortSignal` for cancellation
 - On success: status `completed`, set `expiresAt` = now + 1hr, increment rate limit if free
 - On failure: status `failed`, do NOT consume quota
-- On timeout (30s): kill subprocess, status `timeout`
+- On timeout (30s): abort the `AbortController` signal, set status `timeout`
+- On failure or timeout: queue deletes any known partial output artifacts it manages (e.g. `outputPath`); converter wrappers are responsible for terminating their subprocesses and cleaning up their own per-run temp directories in `finally`
 - After each completion, call `processQueue()` again
+- Expired-file cleanup is separate; `cleanup.ts` only handles completed artifacts past `expiresAt`
 - **Tests (`tests/unit/queue.test.ts`):**
     - Respects max 5 concurrent jobs
-    - Times out after 30 seconds (mock timer)
+    - Times out after 30 seconds by aborting the `AbortSignal` (mock timer)
     - Re-entrant guard prevents double-processing
     - Status transitions follow the lifecycle (queued → converting → completed/failed/timeout)
     - Failed jobs do not consume free quota
+    - Failed/timeout jobs result in partial artifacts being cleaned up (queue removes known outputs; converters clean their temp dirs)
     - Calls `processQueue()` after each completion to drain the queue
 
 ### 1.7 Client IP Resolution (`app/lib/request-ip.ts`) — **new file**
@@ -102,48 +106,71 @@ WittyFlip is an online document conversion service (DOCX->Markdown, DJVU->PDF, e
 
 ### 2.1 Common Interface & Registry (`app/lib/converters/index.ts`)
 
-- `Converter` interface with `convert(inputPath, outputPath) -> ConvertResult`
+- `Converter` interface with `convert(inputPath, outputPath, signal) -> ConvertResult`
 - `ConvertResult`: `{ success, outputPath, exitCode, errorMessage?, durationMs }`
-- Shared `spawnWithTimeout(cmd, args, opts, timeoutMs)` helper using `child_process.spawn`
+- Shared `spawnWithSignal(cmd, args, signal, opts?)` helper using `child_process.spawn`
+- Queue remains the single owner of the 30s timeout policy via `AbortController`
 - `getConverter(toolName)` registry function
+- Add `sanitizeToolError()` helper for truncation, ANSI stripping, and path redaction
 
-### 2.2 Pandoc (`app/lib/converters/pandoc.ts`)
+### 2.2 Runtime Isolation Contract
+
+- Converter wrappers are thin process adapters only; they do NOT satisfy sandboxing requirements by themselves
+- Document and enforce where the following guarantees come from:
+  - no outbound network access for HTML->PDF (`--network=none` or equivalent runtime isolation)
+  - reduced Linux capabilities for conversion subprocesses / worker runtime
+  - per-process memory limits via cgroup/ulimit/container runtime
+- If these guarantees are not available in the current deployment shape, treat HTML->PDF as blocked for launch rather than claiming SSRF protection from wrapper flags alone
+
+### 2.3 Converter Bootstrap (`app/lib/converters/register-all.ts`) — **new file**
+
+- Export `registerAllConverters()` with a module-level idempotent guard
+- Converter modules export converter objects/functions; they do NOT self-register on import
+- Call `registerAllConverters()` explicitly from server bootstrap and any test harness that wants the real registry populated
+- Keep `queue.ts` free of implicit side-effect imports so queue tests can still register test doubles directly
+
+### 2.4 Pandoc (`app/lib/converters/pandoc.ts`)
 
 - DOCX->MD: `pandoc input.docx -t markdown -o output.md`
 - MD->PDF: `pandoc input.md -o output.pdf --pdf-engine=weasyprint`
 - ODT->DOCX: `pandoc input.odt -o output.docx`
+- Returns user-safe errors via shared sanitizer
 
-### 2.3 djvulibre (`app/lib/converters/djvulibre.ts`)
+### 2.5 djvulibre (`app/lib/converters/djvulibre.ts`)
 
 - DJVU->PDF: `ddjvu -format=pdf input.djvu output.pdf`
 
-### 2.4 Calibre (`app/lib/converters/calibre.ts`)
+### 2.6 Calibre (`app/lib/converters/calibre.ts`)
 
 - EPUB->MOBI: `ebook-convert input.epub output.mobi`
 
-### 2.5 weasyprint (`app/lib/converters/weasyprint.ts`)
+### 2.7 weasyprint (`app/lib/converters/weasyprint.ts`)
 
-- HTML->PDF: `weasyprint input.html output.pdf`
-- Security: no external resource fetching (SSRF protection)
+- HTML->PDF: `weasyprint input.html output.pdf --presentational-hints --base-url /dev/null`
+- `--base-url /dev/null` only constrains local relative resolution; actual SSRF protection comes from runtime network isolation, not from this flag alone
 
-### 2.6 pdflatex (`app/lib/converters/pdflatex.ts`) — **new file**
+### 2.8 pdflatex (`app/lib/converters/pdflatex.ts`) — **new file**
 
-- LaTeX->PDF: `pdflatex -interaction=nonstopmode -output-directory=... input.tex`
+- LaTeX->PDF: `pdflatex -interaction=nonstopmode -halt-on-error -output-directory=... input.tex`
+- Use a per-job temp working directory, rename the generated PDF into the expected output path, then clean the temp directory in `finally`
 
-### 2.7 LibreOffice (`app/lib/converters/libreoffice.ts`)
+### 2.9 LibreOffice (`app/lib/converters/libreoffice.ts`)
 
 - ODT->DOCX fallback: `libreoffice --headless --convert-to docx`
 - Lower priority — Pandoc is primary for this conversion
+- Use a unique `UserInstallation` profile per invocation and remove it in `finally`
 
-### 2.8 Converter Unit Tests (`tests/unit/converters/`)
+### 2.10 Converter Unit Tests (`tests/unit/converters/`)
 
-Each converter wrapper gets a test file verifying (with mocked `child_process.spawn`):
+Each converter wrapper gets a test file verifying (with mocked `spawnWithSignal` unless the helper itself is under test):
 
 - Builds the correct command and arguments for each conversion
 - Handles non-zero exit codes (returns `{ success: false, errorMessage }`)
 - Respects AbortSignal for cancellation
 - Returns correct `ConvertResult` shape on success
-- `getConverter(toolName)` returns the right converter for each registered tool name
+- Uses the shared error sanitizer
+- Cleans up temp directories / auxiliary files on failure paths where applicable
+- `registerAllConverters()` populates the registry exactly once
 
 ---
 
@@ -320,9 +347,10 @@ Each converter wrapper gets a test file verifying (with mocked `child_process.sp
 
 ### 8.1 File Cleanup (`app/lib/cleanup.ts`) — **new file**
 
-- `cleanupExpiredFiles()` — delete expired files, update status
+- `cleanupExpiredFiles()` — delete expired completed artifacts, update status
 - Never delete pending_payment/queued/converting jobs
 - Run on startup for stale files from previous runs
+- This module does NOT own failed/timeout cleanup; immediate conversion cleanup remains in `queue.ts` / converter wrappers
 
 ### 8.2 Cron Scheduler
 
