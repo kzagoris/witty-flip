@@ -11,7 +11,7 @@ export function sanitizeToolError(raw: string): string {
     // eslint-disable-next-line no-control-regex
     .replace(/\x1b\[[0-9;]*[A-Za-z]/g, '')
     // Remove common server-side absolute paths (preserve the final filename)
-    .replace(/\/(?:home|tmp|var|data|srv|opt|usr|etc)\/\S*/g, '')
+    .replace(/\/(?:home|tmp|var|data|srv|opt|usr|etc)\/\S*/g, match => match.replace(/^.*\//, ''))
     .trim()
 
   if (cleaned.length > MAX_ERROR_LENGTH) {
