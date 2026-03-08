@@ -1,0 +1,98 @@
+import { describe, it, expect, vi, beforeEach } from 'vitest'
+import type { SpawnResult } from '~/lib/converters/spawn-helper'
+
+vi.mock('~/lib/converters/spawn-helper', async (importOriginal) => {
+  const original = await importOriginal<typeof import('~/lib/converters/spawn-helper')>()
+  return { ...original, spawnWithSignal: vi.fn() }
+})
+
+const INPUT = '/data/input.html'
+const OUTPUT = '/data/output.pdf'
+
+describe('weasyprint converter', () => {
+  let weasyprintConverter: typeof import('~/lib/converters/weasyprint').weasyprintConverter
+  let runtimePrerequisite: typeof import('~/lib/converters/weasyprint').WEASYPRINT_RUNTIME_PREREQUISITE
+  let spawnWithSignal: ReturnType<typeof vi.fn>
+
+  beforeEach(async () => {
+    vi.resetModules()
+    const spawnMod = await import('~/lib/converters/spawn-helper')
+    spawnWithSignal = spawnMod.spawnWithSignal as ReturnType<typeof vi.fn>
+    const mod = await import('~/lib/converters/weasyprint')
+    weasyprintConverter = mod.weasyprintConverter
+    runtimePrerequisite = mod.WEASYPRINT_RUNTIME_PREREQUISITE
+  })
+
+  it('calls weasyprint with correct args including --presentational-hints', async () => {
+    spawnWithSignal.mockResolvedValue({ exitCode: 0, stdout: '', stderr: '' } satisfies SpawnResult)
+    const signal = AbortSignal.timeout(5_000)
+    await weasyprintConverter.convert(INPUT, OUTPUT, signal)
+    expect(spawnWithSignal).toHaveBeenCalledWith(
+      'weasyprint',
+      [INPUT, OUTPUT, '--presentational-hints', '--base-url', '/dev/null'],
+      signal,
+    )
+  })
+
+  it('includes --presentational-hints in args', async () => {
+    spawnWithSignal.mockResolvedValue({ exitCode: 0, stdout: '', stderr: '' } satisfies SpawnResult)
+    await weasyprintConverter.convert(INPUT, OUTPUT, AbortSignal.timeout(5_000))
+    const args = spawnWithSignal.mock.calls[0][1] as string[]
+    expect(args).toContain('--presentational-hints')
+  })
+
+  it('includes --base-url /dev/null in args', async () => {
+    spawnWithSignal.mockResolvedValue({ exitCode: 0, stdout: '', stderr: '' } satisfies SpawnResult)
+    await weasyprintConverter.convert(INPUT, OUTPUT, AbortSignal.timeout(5_000))
+    const args = spawnWithSignal.mock.calls[0][1] as string[]
+    const baseUrlIdx = args.indexOf('--base-url')
+    expect(baseUrlIdx).toBeGreaterThanOrEqual(0)
+    expect(args[baseUrlIdx + 1]).toBe('/dev/null')
+  })
+
+  it('returns success on exit code 0', async () => {
+    spawnWithSignal.mockResolvedValue({ exitCode: 0, stdout: '', stderr: '' } satisfies SpawnResult)
+    const result = await weasyprintConverter.convert(INPUT, OUTPUT, AbortSignal.timeout(5_000))
+    expect(result.success).toBe(true)
+    expect(result.exitCode).toBe(0)
+    expect(result.outputPath).toBe(OUTPUT)
+    expect(result.errorMessage).toBeUndefined()
+  })
+
+  it('returns failure with stderr on non-zero exit', async () => {
+    spawnWithSignal.mockResolvedValue({ exitCode: 1, stdout: '', stderr: 'CSS error' } satisfies SpawnResult)
+    const result = await weasyprintConverter.convert(INPUT, OUTPUT, AbortSignal.timeout(5_000))
+    expect(result.success).toBe(false)
+    expect(result.exitCode).toBe(1)
+    expect(result.errorMessage).toContain('CSS error')
+  })
+
+  it('forwards the AbortSignal to spawnWithSignal', async () => {
+    spawnWithSignal.mockResolvedValue({ exitCode: 0, stdout: '', stderr: '' } satisfies SpawnResult)
+    const controller = new AbortController()
+    await weasyprintConverter.convert(INPUT, OUTPUT, controller.signal)
+    expect(spawnWithSignal.mock.calls[0][2]).toBe(controller.signal)
+  })
+
+  it('re-throws AbortError', async () => {
+    const abortErr = new Error('aborted')
+    abortErr.name = 'AbortError'
+    spawnWithSignal.mockRejectedValue(abortErr)
+    await expect(
+      weasyprintConverter.convert(INPUT, OUTPUT, AbortSignal.timeout(5_000)),
+    ).rejects.toMatchObject({ name: 'AbortError' })
+  })
+
+  it('returns failure with descriptive message on ENOENT', async () => {
+    spawnWithSignal.mockRejectedValue(new Error("Tool 'weasyprint' is not installed"))
+    const result = await weasyprintConverter.convert(INPUT, OUTPUT, AbortSignal.timeout(5_000))
+    expect(result.success).toBe(false)
+    expect(result.exitCode).toBe(-1)
+    expect(result.errorMessage).toContain('not installed')
+  })
+
+  it('documents that wrapper flags alone are not SSRF protection', () => {
+    expect(runtimePrerequisite.toLowerCase()).toContain('runtime network isolation')
+    expect(runtimePrerequisite.toLowerCase()).toContain('not ssrf protection')
+  })
+})
