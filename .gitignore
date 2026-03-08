@@ -22,5 +22,8 @@ Thumbs.db
 # Logs
 *.log
 
+# Worktrees
+.worktrees/
+
 # TanStack Router generated
 app/routeTree.gen.ts
