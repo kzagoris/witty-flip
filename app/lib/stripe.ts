@@ -1,5 +1,5 @@
 import Stripe from 'stripe'
-import { eq } from 'drizzle-orm'
+import { and, desc, eq } from 'drizzle-orm'
 import { db } from '~/lib/db'
 import { conversions, payments } from '~/lib/db/schema'
 import { enqueueJob } from '~/lib/queue'
@@ -15,6 +15,43 @@ export const stripe = stripeSecretKey ? new Stripe(stripeSecretKey) : null
 
 const BASE_URL = process.env.BASE_URL ?? 'http://localhost:3000'
 
+async function getReusableCheckoutSession(
+  fileId: string,
+): Promise<{ checkoutUrl: string; sessionId: string } | undefined> {
+  if (!stripe) {
+    return undefined
+  }
+
+  const pendingPayments = await db
+    .select()
+    .from(payments)
+    .where(and(
+      eq(payments.fileId, fileId),
+      eq(payments.status, 'pending'),
+    ))
+    .orderBy(desc(payments.createdAt))
+
+  for (const payment of pendingPayments) {
+    if (!payment.checkoutExpiresAt || new Date(payment.checkoutExpiresAt).getTime() <= Date.now()) {
+      continue
+    }
+
+    try {
+      const session = await stripe.checkout.sessions.retrieve(payment.stripeSessionId)
+      if (session.status === 'open' && session.url) {
+        return {
+          checkoutUrl: session.url,
+          sessionId: session.id,
+        }
+      }
+    } catch {
+      continue
+    }
+  }
+
+  return undefined
+}
+
 export async function createCheckoutSession(fileId: string): Promise<{ checkoutUrl: string; sessionId: string }> {
   const conversion = await db.query.conversions.findFirst({
     where: eq(conversions.id, fileId),
@@ -24,12 +61,17 @@ export async function createCheckoutSession(fileId: string): Promise<{ checkoutU
     throw new Error('Conversion not found.')
   }
 
-  if (conversion.status !== 'payment_required') {
+  if (conversion.status !== 'payment_required' && conversion.status !== 'pending_payment') {
     throw new Error(`Cannot create checkout for conversion with status "${conversion.status}".`)
   }
 
   if (!stripe) {
     throw new Error('Payment system is not configured.')
+  }
+
+  const reusableSession = await getReusableCheckoutSession(fileId)
+  if (reusableSession) {
+    return reusableSession
   }
 
   const session = await stripe.checkout.sessions.create({
@@ -57,18 +99,21 @@ export async function createCheckoutSession(fileId: string): Promise<{ checkoutU
   })
 
   await db.transaction(async (tx) => {
-    await tx.insert(payments).values({
-      fileId,
-      stripeSessionId: session.id,
-      amountCents: 49,
-      currency: 'usd',
-      conversionType: conversion.conversionType,
-      ipAddress: conversion.ipAddress,
-      checkoutExpiresAt: session.expires_at
-        ? new Date(session.expires_at * 1000).toISOString()
-        : null,
-      status: 'pending',
-    })
+    await tx
+      .insert(payments)
+      .values({
+        fileId,
+        stripeSessionId: session.id,
+        amountCents: 49,
+        currency: 'usd',
+        conversionType: conversion.conversionType,
+        ipAddress: conversion.ipAddress,
+        checkoutExpiresAt: session.expires_at
+          ? new Date(session.expires_at * 1000).toISOString()
+          : null,
+        status: 'pending',
+      })
+      .onConflictDoNothing()
 
     await tx
       .update(conversions)

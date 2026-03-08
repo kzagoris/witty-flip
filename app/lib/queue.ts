@@ -1,6 +1,6 @@
 import path from 'node:path'
 import fs from 'node:fs'
-import { eq, and, asc, sql } from 'drizzle-orm'
+import { eq, and, asc, or, sql } from 'drizzle-orm'
 import { db } from '~/lib/db'
 import { conversions } from '~/lib/db/schema'
 import { incrementRateLimit } from '~/lib/rate-limit'
@@ -14,58 +14,77 @@ const DOWNLOAD_WINDOW_MS = 60 * 60 * 1000
 export const CONVERSIONS_DIR = path.resolve('data', 'conversions')
 
 let isProcessing = false
+let shouldProcessAgain = false
 
 export async function enqueueJob(fileId: string): Promise<void> {
   await db
     .update(conversions)
     .set({ status: 'queued' })
-    .where(eq(conversions.id, fileId))
+    .where(and(
+      eq(conversions.id, fileId),
+      or(
+        eq(conversions.status, 'uploaded'),
+        eq(conversions.status, 'pending_payment'),
+      ),
+    ))
 
   // Fire-and-forget
   void processQueue()
 }
 
 export async function processQueue(): Promise<void> {
-  if (isProcessing) return
+  if (isProcessing) {
+    shouldProcessAgain = true
+    return
+  }
+
   isProcessing = true
 
   try {
-    for (;;) {
-      // Count active jobs
-      const activeResult = await db
-        .select({ count: sql<number>`count(*)` })
-        .from(conversions)
-        .where(eq(conversions.status, 'converting'))
-      const activeCount = activeResult[0]?.count ?? 0
+    do {
+      shouldProcessAgain = false
 
-      if (activeCount >= MAX_CONCURRENT_JOBS) break
+      for (;;) {
+        // Count active jobs
+        const activeResult = await db
+          .select({ count: sql<number>`count(*)` })
+          .from(conversions)
+          .where(eq(conversions.status, 'converting'))
+        const activeCount = activeResult[0]?.count ?? 0
 
-      // Get oldest queued job
-      const [nextJob] = await db
-        .select()
-        .from(conversions)
-        .where(eq(conversions.status, 'queued'))
-        .orderBy(asc(conversions.createdAt))
-        .limit(1)
+        if (activeCount >= MAX_CONCURRENT_JOBS) break
 
-      if (!nextJob) break
+        // Get oldest queued job
+        const [nextJob] = await db
+          .select()
+          .from(conversions)
+          .where(eq(conversions.status, 'queued'))
+          .orderBy(asc(conversions.createdAt))
+          .limit(1)
 
-      // Claim the job atomically
-      const claimResult = await db
-        .update(conversions)
-        .set({
-          status: 'converting',
-          conversionStartedAt: new Date().toISOString(),
-        })
-        .where(and(eq(conversions.id, nextJob.id), eq(conversions.status, 'queued')))
+        if (!nextJob) break
 
-      if (claimResult.rowsAffected === 0) continue
+        // Claim the job atomically
+        const claimResult = await db
+          .update(conversions)
+          .set({
+            status: 'converting',
+            conversionStartedAt: new Date().toISOString(),
+          })
+          .where(and(eq(conversions.id, nextJob.id), eq(conversions.status, 'queued')))
 
-      // Fire-and-forget the conversion
-      void runConversion(nextJob)
-    }
+        if (claimResult.rowsAffected === 0) continue
+
+        // Fire-and-forget the conversion
+        void runConversion(nextJob)
+      }
+    } while (shouldProcessAgain)
   } finally {
     isProcessing = false
+
+    if (shouldProcessAgain) {
+      void processQueue()
+    }
   }
 }
 
@@ -102,12 +121,28 @@ async function runConversion(job: typeof conversions.$inferSelect): Promise<void
       clearTimeout(timeoutId)
 
       if (result.success) {
+        const resultOutputPath = result.outputPath || outputPath
         let outputSize: number | undefined
         try {
-          const stat = fs.statSync(outputPath)
+          const stat = fs.statSync(resultOutputPath)
           outputSize = stat.size
         } catch {
-          // output file may not exist if converter reported success incorrectly
+          outputSize = undefined
+        }
+
+        if (!outputSize) {
+          await db
+            .update(conversions)
+            .set({
+              status: 'failed',
+              errorMessage: 'Conversion did not produce a downloadable file.',
+              toolExitCode: result.exitCode,
+              conversionTimeMs: result.durationMs,
+              conversionCompletedAt: new Date().toISOString(),
+            })
+            .where(eq(conversions.id, job.id))
+
+          return
         }
 
         await db

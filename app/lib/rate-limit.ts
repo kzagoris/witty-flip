@@ -1,4 +1,4 @@
-import { eq, and } from 'drizzle-orm'
+import { eq, and, sql } from 'drizzle-orm'
 import { db } from '~/lib/db'
 import { rateLimits } from '~/lib/db/schema'
 
@@ -39,20 +39,17 @@ export async function checkRateLimit(ip: string): Promise<RateLimitResult> {
 
 export async function incrementRateLimit(ip: string): Promise<void> {
   const today = getTodayUTC()
-  const row = await db.query.rateLimits.findFirst({
-    where: and(eq(rateLimits.ipAddress, ip), eq(rateLimits.date, today)),
-  })
-
-  if (row) {
-    await db
-      .update(rateLimits)
-      .set({ freeConversionCount: (row.freeConversionCount ?? 0) + 1 })
-      .where(eq(rateLimits.id, row.id))
-  } else {
-    await db.insert(rateLimits).values({
+  await db
+    .insert(rateLimits)
+    .values({
       ipAddress: ip,
       date: today,
       freeConversionCount: 1,
     })
-  }
+    .onConflictDoUpdate({
+      target: [rateLimits.ipAddress, rateLimits.date],
+      set: {
+        freeConversionCount: sql`coalesce(${rateLimits.freeConversionCount}, 0) + 1`,
+      },
+    })
 }

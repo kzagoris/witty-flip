@@ -10,6 +10,18 @@ export interface ValidationResult {
 }
 
 const TEXT_EXTENSIONS = new Set(['.md', '.markdown', '.tex', '.html', '.htm'])
+const ZIP_EOCD_SIGNATURE = 0x06054b50
+const ZIP_CENTRAL_DIRECTORY_SIGNATURE = 0x02014b50
+const ZIP_LOCAL_FILE_HEADER_SIGNATURE = 0x04034b50
+const ZIP_EOCD_MIN_SIZE = 22
+const ZIP_EOCD_MAX_SEARCH = 65_557
+
+interface ZipEntry {
+  name: string
+  compressionMethod: number
+  compressedSize: number
+  localHeaderOffset: number
+}
 
 function isValidDjvu(buffer: Buffer | Uint8Array): boolean {
   if (buffer.byteLength < 16) return false
@@ -35,6 +47,116 @@ function isValidUtf8(buffer: Buffer | Uint8Array): boolean {
   } catch {
     return false
   }
+}
+
+function getDataView(buffer: Buffer | Uint8Array): DataView {
+  return new DataView(buffer.buffer, buffer.byteOffset, buffer.byteLength)
+}
+
+function decodeText(buffer: Buffer | Uint8Array): string {
+  return new TextDecoder('utf-8', { fatal: true }).decode(buffer)
+}
+
+function parseZipEntries(buffer: Buffer | Uint8Array): ZipEntry[] | undefined {
+  const view = getDataView(buffer)
+  const searchStart = Math.max(0, buffer.byteLength - ZIP_EOCD_MAX_SEARCH)
+  let eocdOffset = -1
+
+  for (let offset = buffer.byteLength - ZIP_EOCD_MIN_SIZE; offset >= searchStart; offset -= 1) {
+    if (view.getUint32(offset, true) === ZIP_EOCD_SIGNATURE) {
+      eocdOffset = offset
+      break
+    }
+  }
+
+  if (eocdOffset === -1) return undefined
+
+  const entryCount = view.getUint16(eocdOffset + 10, true)
+  const centralDirectoryOffset = view.getUint32(eocdOffset + 16, true)
+  const entries: ZipEntry[] = []
+  const filenameDecoder = new TextDecoder('utf-8')
+  let offset = centralDirectoryOffset
+
+  for (let index = 0; index < entryCount; index += 1) {
+    if (offset + 46 > buffer.byteLength) return undefined
+    if (view.getUint32(offset, true) !== ZIP_CENTRAL_DIRECTORY_SIGNATURE) return undefined
+
+    const compressionMethod = view.getUint16(offset + 10, true)
+    const compressedSize = view.getUint32(offset + 20, true)
+    const filenameLength = view.getUint16(offset + 28, true)
+    const extraLength = view.getUint16(offset + 30, true)
+    const commentLength = view.getUint16(offset + 32, true)
+    const localHeaderOffset = view.getUint32(offset + 42, true)
+    const filenameStart = offset + 46
+    const filenameEnd = filenameStart + filenameLength
+
+    if (filenameEnd > buffer.byteLength) return undefined
+
+    entries.push({
+      name: filenameDecoder.decode(buffer.subarray(filenameStart, filenameEnd)),
+      compressionMethod,
+      compressedSize,
+      localHeaderOffset,
+    })
+
+    offset = filenameEnd + extraLength + commentLength
+  }
+
+  return entries
+}
+
+function readStoredZipEntryText(
+  buffer: Buffer | Uint8Array,
+  entry: ZipEntry,
+): string | undefined {
+  if (entry.compressionMethod !== 0) return undefined
+
+  const view = getDataView(buffer)
+  const headerOffset = entry.localHeaderOffset
+  if (headerOffset + 30 > buffer.byteLength) return undefined
+  if (view.getUint32(headerOffset, true) !== ZIP_LOCAL_FILE_HEADER_SIGNATURE) return undefined
+
+  const filenameLength = view.getUint16(headerOffset + 26, true)
+  const extraLength = view.getUint16(headerOffset + 28, true)
+  const dataStart = headerOffset + 30 + filenameLength + extraLength
+  const dataEnd = dataStart + entry.compressedSize
+
+  if (dataEnd > buffer.byteLength) return undefined
+
+  try {
+    return decodeText(buffer.subarray(dataStart, dataEnd))
+  } catch {
+    return undefined
+  }
+}
+
+function isExpectedZipContainer(
+  buffer: Buffer | Uint8Array,
+  ext: string,
+): boolean {
+  const entries = parseZipEntries(buffer)
+  if (!entries) return false
+
+  if (ext === '.docx') {
+    return entries.some((entry) => entry.name === '[Content_Types].xml')
+      && entries.some((entry) => entry.name.startsWith('word/'))
+  }
+
+  const mimetypeEntry = entries.find((entry) => entry.name === 'mimetype')
+  if (!mimetypeEntry) return false
+
+  const mimetype = readStoredZipEntryText(buffer, mimetypeEntry)
+  if (!mimetype) return false
+
+  if (ext === '.odt') {
+    return mimetype === 'application/vnd.oasis.opendocument.text'
+  }
+
+  if (ext === '.epub') {
+    return mimetype === 'application/epub+zip'
+  }
+
+  return false
 }
 
 export async function validateFile(
@@ -86,6 +208,10 @@ export async function validateFile(
   const isZip = detected.mime === 'application/zip'
   if (!isExpectedMime && !isZip) {
     return { valid: false, error: `File content does not match expected type. Detected: ${detected.mime}` }
+  }
+
+  if (!isExpectedZipContainer(buffer, ext)) {
+    return { valid: false, error: 'File content does not match the expected document format.' }
   }
 
   return { valid: true }
