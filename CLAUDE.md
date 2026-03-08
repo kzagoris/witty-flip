@@ -89,3 +89,7 @@ Each conversion tool has a wrapper in `app/lib/converters/` (pandoc.ts, libreoff
 ## Git Commit Preferences
 
 - Never include `Co-Authored-By` trailers in commit messages.
+
+## Workflow Preferences
+
+- Never create git worktrees. Always implement changes directly in the current repository.
