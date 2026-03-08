@@ -64,20 +64,20 @@ WittyFlip is an online document conversion service (DOCX->Markdown, DJVU->PDF, e
 - `enqueueJob(fileId)` — sets status to `queued`, calls `processQueue()`
 - `processQueue()` — if `converting` count < 5, dequeue oldest `queued` job
 - `startConversion(fileId)` — sets `converting`, calls converter, handles success/failure/timeout
-- Queue owns timeout via `AbortController` + `AbortSignal`; converter wrappers must not implement their own timeout policy
+- Queue owns timeout via `AbortController` + `AbortSignal`; converters must not implement their own timeout policy but instead listen to the provided `AbortSignal` for cancellation
 - On success: status `completed`, set `expiresAt` = now + 1hr, increment rate limit if free
 - On failure: status `failed`, do NOT consume quota
-- On timeout (30s): kill subprocess, status `timeout`
-- On failure or timeout: delete partial output files and per-run temp directories created by converters
+- On timeout (30s): abort the `AbortController` signal, set status `timeout`
+- On failure or timeout: queue deletes any known partial output artifacts it manages (e.g. `outputPath`); converter wrappers are responsible for terminating their subprocesses and cleaning up their own per-run temp directories in `finally`
 - After each completion, call `processQueue()` again
 - Expired-file cleanup is separate; `cleanup.ts` only handles completed artifacts past `expiresAt`
 - **Tests (`tests/unit/queue.test.ts`):**
     - Respects max 5 concurrent jobs
-    - Times out after 30 seconds (mock timer)
+    - Times out after 30 seconds by aborting the `AbortSignal` (mock timer)
     - Re-entrant guard prevents double-processing
     - Status transitions follow the lifecycle (queued → converting → completed/failed/timeout)
     - Failed jobs do not consume free quota
-    - Failed/timeout jobs clean up partial artifacts
+    - Failed/timeout jobs result in partial artifacts being cleaned up (queue removes known outputs; converters clean their temp dirs)
     - Calls `processQueue()` after each completion to drain the queue
 
 ### 1.7 Client IP Resolution (`app/lib/request-ip.ts`) — **new file**
