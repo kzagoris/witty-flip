@@ -74,28 +74,28 @@ wittyflip.com
 
 ### Tech Stack
 
-| Component | Technology | Rationale |
-|---|---|---|
-| **Framework** | TanStack Start (React) | SSR for SEO, excellent DX, type-safe server functions, Vite-based |
-| **Styling** | Tailwind CSS | User knows it well, utility-first, fast to iterate |
-| **UI Components** | shadcn/ui or custom Tailwind | Accessible, composable, no heavy library |
-| **Database** | SQLite + Drizzle ORM | Zero-config, embedded, low resource usage. Drizzle enables future PostgreSQL migration |
-| **Payments** | Stripe Checkout (guest mode) | No account needed, handles PCI compliance, simple integration |
-| **Ads** | Google AdSense | Standard, easy setup, good CPM for converter keywords |
-| **Reverse Proxy** | Caddy | Auto SSL (Let's Encrypt), simple config, HTTP/2+3 |
-| **Deployment** | Docker on Hetzner VPS | $5-10/mo, full control, reproducible builds |
+| Component         | Technology                   | Rationale                                                                              |
+| ----------------- | ---------------------------- | -------------------------------------------------------------------------------------- |
+| **Framework**     | TanStack Start (React)       | SSR for SEO, excellent DX, type-safe server functions, Vite-based                      |
+| **Styling**       | Tailwind CSS                 | User knows it well, utility-first, fast to iterate                                     |
+| **UI Components** | shadcn/ui or custom Tailwind | Accessible, composable, no heavy library                                               |
+| **Database**      | SQLite + Drizzle ORM         | Zero-config, embedded, low resource usage. Drizzle enables future PostgreSQL migration |
+| **Payments**      | Stripe Checkout (guest mode) | No account needed, handles PCI compliance, simple integration                          |
+| **Ads**           | Google AdSense               | Standard, easy setup, good CPM for converter keywords                                  |
+| **Reverse Proxy** | Caddy                        | Auto SSL (Let's Encrypt), simple config, HTTP/2+3                                      |
+| **Deployment**    | Docker on Hetzner VPS        | $5-10/mo, full control, reproducible builds                                            |
 
 ### Conversion Tools
 
-| Conversion | Tool | Command Example |
-|---|---|---|
-| DOCX -> Markdown | Pandoc | `pandoc input.docx -t markdown -o output.md` |
-| Markdown -> PDF | Pandoc + LaTeX/weasyprint | `pandoc input.md -o output.pdf --pdf-engine=weasyprint` |
-| HTML -> PDF | Puppeteer or weasyprint | `weasyprint input.html output.pdf` |
-| DJVU -> PDF | djvulibre | `ddjvu -format=pdf input.djvu output.pdf` |
-| EPUB -> MOBI | Calibre | `ebook-convert input.epub output.mobi` |
-| ODT -> DOCX | Pandoc or LibreOffice | `pandoc input.odt -o output.docx` |
-| LaTeX -> PDF | pdflatex | `pdflatex input.tex` |
+| Conversion       | Tool                      | Command Example                                         |
+| ---------------- | ------------------------- | ------------------------------------------------------- |
+| DOCX -> Markdown | Pandoc                    | `pandoc input.docx -t markdown -o output.md`            |
+| Markdown -> PDF  | Pandoc + LaTeX/weasyprint | `pandoc input.md -o output.pdf --pdf-engine=weasyprint` |
+| HTML -> PDF      | Puppeteer or weasyprint   | `weasyprint input.html output.pdf`                      |
+| DJVU -> PDF      | djvulibre                 | `ddjvu -format=pdf input.djvu output.pdf`               |
+| EPUB -> MOBI     | Calibre                   | `ebook-convert input.epub output.mobi`                  |
+| ODT -> DOCX      | Pandoc or LibreOffice     | `pandoc input.odt -o output.docx`                       |
+| LaTeX -> PDF     | pdflatex                  | `pdflatex input.tex`                                    |
 
 ### Data Model
 
@@ -157,11 +157,12 @@ POST /api/upload
   - Validates: file type (magic bytes), file size (<10MB)
   - Stores the file on disk using a UUID-based path
   - Creates a conversion row with status="uploaded"
+  - Resolves caller IP via trusted-proxy policy; never trusts forwarded headers from direct clients
   - Returns: { fileId: "uuid", status: "uploaded" }
 
 POST /api/convert
   - Body: { fileId, targetFormat }
-  - Checks the free daily quota for the caller IP
+  - Checks the free daily quota for the caller IP resolved via trusted-proxy policy
   - If quota remains: enqueues the job and returns { fileId, status: "queued" }
   - If quota is exhausted: marks the row payment_required and returns 402 { fileId, status: "payment_required" }
 
@@ -187,11 +188,18 @@ POST /api/webhook/stripe
   - On success: marks payment complete, sets was_paid=1, enqueues conversion
 
 GET /api/rate-limit-status
+  - Resolves caller IP via the same trusted-proxy policy as /api/convert
   - Returns: { remaining: 2, limit: 2, resetAt: "2026-03-08T00:00:00Z" }
 
 Error response shape
   - All non-2xx responses return:
     { error: "machine_readable_code", message: "User-friendly explanation", fileId?: "uuid", checkoutUrl?: "..." }
+
+Trusted proxy policy
+  - Single-hop deployment behind Caddy only
+  - Read `X-Forwarded-For` only when the direct peer address matches configured trusted Caddy proxy addresses/CIDRs
+  - When trusted, use the leftmost `X-Forwarded-For` value after trimming and IP validation
+  - When untrusted, missing, or malformed, ignore forwarded headers and use the direct peer address
 ```
 
 ### File Processing Pipeline
@@ -242,26 +250,26 @@ Error response shape
 
 ### Phase 1 (Launch)
 
-| Tier | Details |
-|---|---|
-| **Free** | 2 conversions/day per IP. Ads shown (Google AdSense on download page). Max 10MB file size. |
+| Tier     | Details                                                                                                       |
+| -------- | ------------------------------------------------------------------------------------------------------------- |
+| **Free** | 2 conversions/day per IP. Ads shown (Google AdSense on download page). Max 10MB file size.                    |
 | **Paid** | $0.49 per file via Stripe Checkout (guest, no account). No ads on paid conversion result. Max 10MB file size. |
 
 ### Phase 2 (After Traction)
 
-| Addition | Details |
-|---|---|
-| **Google Sign-In** | Optional. Logged-in users get 5 free/day + conversion history. |
-| **Monthly Plan** | $4.99/mo for unlimited conversions, no ads, larger file sizes (50MB). |
+| Addition           | Details                                                               |
+| ------------------ | --------------------------------------------------------------------- |
+| **Google Sign-In** | Optional. Logged-in users get 5 free/day + conversion history.        |
+| **Monthly Plan**   | $4.99/mo for unlimited conversions, no ads, larger file sizes (50MB). |
 
 ### Phase 3 (Scale)
 
-| Addition | Details |
-|---|---|
+| Addition             | Details                                                               |
+| -------------------- | --------------------------------------------------------------------- |
 | **Batch Conversion** | Upload multiple files, convert all, download as ZIP. Premium feature. |
-| **API Access** | $9.99/mo developer plan with REST API and API keys. |
-| **PDF Tools** | Merge, split, compress PDF. High-traffic expansion. |
-| **Credit Packs** | Buy 20 conversions for $7.99 (no expiry). |
+| **API Access**       | $9.99/mo developer plan with REST API and API keys.                   |
+| **PDF Tools**        | Merge, split, compress PDF. High-traffic expansion.                   |
+| **Credit Packs**     | Buy 20 conversions for $7.99 (no expiry).                             |
 
 ### Revenue Streams
 
@@ -279,17 +287,18 @@ SEO is the primary acquisition channel. 70%+ of competitor traffic comes from or
 
 Each conversion gets a dedicated SSR page optimized for search:
 
-| URL | Target Keyword |
-|---|---|
+| URL                 | Target Keyword                    |
+| ------------------- | --------------------------------- |
 | `/docx-to-markdown` | "convert docx to markdown online" |
-| `/markdown-to-pdf` | "convert markdown to pdf online" |
-| `/html-to-pdf` | "convert html to pdf online" |
-| `/djvu-to-pdf` | "convert djvu to pdf online" |
-| `/epub-to-mobi` | "convert epub to mobi online" |
-| `/odt-to-docx` | "convert odt to docx online" |
-| `/latex-to-pdf` | "convert latex to pdf online" |
+| `/markdown-to-pdf`  | "convert markdown to pdf online"  |
+| `/html-to-pdf`      | "convert html to pdf online"      |
+| `/djvu-to-pdf`      | "convert djvu to pdf online"      |
+| `/epub-to-mobi`     | "convert epub to mobi online"     |
+| `/odt-to-docx`      | "convert odt to docx online"      |
+| `/latex-to-pdf`     | "convert latex to pdf online"     |
 
 Each page includes:
+
 - Unique `<title>` and `<meta description>` (e.g., "Convert DOCX to Markdown Online Free | WittyFlip")
 - H1 with target keyword
 - The converter tool (upload area) above the fold
@@ -301,6 +310,7 @@ Each page includes:
 **2. Blog Posts (1-2 per conversion)**
 
 Supporting content for long-tail keywords:
+
 - "How to Convert DOCX to Markdown: 5 Methods Compared"
 - "How to Convert DJVU to PDF Without Installing Software"
 - "LaTeX to PDF: Complete Guide for Researchers"
@@ -309,6 +319,7 @@ Supporting content for long-tail keywords:
 **3. Programmatic SEO Pages**
 
 Auto-generate pages for reverse conversions and future formats:
+
 - `/markdown-to-docx`, `/pdf-to-djvu`, `/mobi-to-epub`
 - Show "Coming soon" with email capture for unsupported conversions
 - Unsupported pages should be `noindex` until the conversion is actually available
@@ -379,14 +390,14 @@ Auto-generate pages for reverse conversions and future formats:
 
 ### Interaction States
 
-| State | UI |
-|---|---|
-| **Idle** | Upload area with subtle pulse animation. Drag-and-drop + click to browse. |
-| **Dragging** | Upload area highlights with border color change and scale-up effect. |
-| **Uploading** | File icon slides in, upload progress bar appears. |
-| **Converting** | Animated progress bar with format conversion animation (DOCX icon -> MD icon). |
-| **Complete** | Green checkmark animation, bold download button with bounce effect. |
-| **Error** | Red indicator with clear error message and "Try Again" button. |
+| State            | UI                                                                               |
+| ---------------- | -------------------------------------------------------------------------------- |
+| **Idle**         | Upload area with subtle pulse animation. Drag-and-drop + click to browse.        |
+| **Dragging**     | Upload area highlights with border color change and scale-up effect.             |
+| **Uploading**    | File icon slides in, upload progress bar appears.                                |
+| **Converting**   | Animated progress bar with format conversion animation (DOCX icon -> MD icon).   |
+| **Complete**     | Green checkmark animation, bold download button with bounce effect.              |
+| **Error**        | Red indicator with clear error message and "Try Again" button.                   |
 | **Rate Limited** | Friendly message: "You've used your free conversions today" + Stripe pay button. |
 
 ### Mobile UX
@@ -407,14 +418,14 @@ Auto-generate pages for reverse conversions and future formats:
 
 ### File Upload Security
 
-| Threat | Mitigation |
-|---|---|
-| **Malicious files** | Run conversion tools in an isolated worker container. The conversion process runs as non-root with dropped Linux capabilities. |
-| **Path traversal** | Never use user-provided filenames. All files renamed to UUID on upload. |
-| **Resource exhaustion** | 10MB file size limit. 30-second conversion timeout. Memory limit per process. |
-| **SSRF (HTML->PDF)** | Run HTML->PDF conversion with `--network=none` / equivalent isolation so the worker has no outbound network access. |
-| **File type spoofing** | Validate magic bytes (not just extension) using `file-type` npm package. |
-| **Concurrent abuse** | Rate limit: max 10 requests/minute per IP. |
+| Threat                  | Mitigation                                                                                                                     |
+| ----------------------- | ------------------------------------------------------------------------------------------------------------------------------ |
+| **Malicious files**     | Run conversion tools in an isolated worker container. The conversion process runs as non-root with dropped Linux capabilities. |
+| **Path traversal**      | Never use user-provided filenames. All files renamed to UUID on upload.                                                        |
+| **Resource exhaustion** | 10MB file size limit. 30-second conversion timeout. Memory limit per process.                                                  |
+| **SSRF (HTML->PDF)**    | Run HTML->PDF conversion with `--network=none` / equivalent isolation so the worker has no outbound network access.            |
+| **File type spoofing**  | Validate magic bytes (not just extension) using `file-type` npm package.                                                       |
+| **Concurrent abuse**    | Rate limit: max 10 requests/minute per IP.                                                                                     |
 
 ### Application Security
 
@@ -423,7 +434,7 @@ Auto-generate pages for reverse conversions and future formats:
 - Conversion subprocess with reduced Linux capabilities (`--cap-drop=ALL`)
 - Auto-delete uploaded files even on conversion failure (finally block)
 - Never serve user-uploaded files directly — always generate fresh download response
-- Trust only proxy headers set by Caddy when determining client IP for rate limiting
+- Trust only proxy headers set by Caddy when determining client IP for rate limiting; ignore spoofed forwarded headers from untrusted peers
 - CSRF protection on all API routes
 - Stripe webhook signature verification
 - Input validation on all API endpoints
@@ -477,33 +488,34 @@ CMD ["node", ".output/server/index.mjs"]
 ```yaml
 # docker-compose.yml
 services:
-  app:
-    build: .
-    ports:
-      - "3000:3000"
-    volumes:
-      - ./data:/app/data
-    environment:
-      - STRIPE_SECRET_KEY=${STRIPE_SECRET_KEY}
-      - STRIPE_WEBHOOK_SECRET=${STRIPE_WEBHOOK_SECRET}
-      - NODE_ENV=production
-    restart: unless-stopped
+    app:
+        build: .
+        ports:
+            - "3000:3000"
+        volumes:
+            - ./data:/app/data
+        environment:
+            - STRIPE_SECRET_KEY=${STRIPE_SECRET_KEY}
+            - STRIPE_WEBHOOK_SECRET=${STRIPE_WEBHOOK_SECRET}
+            - NODE_ENV=production
+        restart: unless-stopped
 
-  caddy:
-    image: caddy:2-alpine
-    ports:
-      - "80:80"
-      - "443:443"
-    volumes:
-      - ./Caddyfile:/etc/caddy/Caddyfile
-      - caddy_data:/data
-    restart: unless-stopped
+    caddy:
+        image: caddy:2-alpine
+        ports:
+            - "80:80"
+            - "443:443"
+        volumes:
+            - ./Caddyfile:/etc/caddy/Caddyfile
+            - caddy_data:/data
+        restart: unless-stopped
 
 volumes:
-  caddy_data:
+    caddy_data:
 ```
 
 Deployment secrets:
+
 - Keep Stripe secrets in a gitignored `.env.production` (or equivalent secret store on the VPS)
 - Load them into Docker Compose at deploy time
 - Never commit live secrets into the repository
@@ -597,18 +609,18 @@ wittyflip/
 
 ## Edge Cases & Error Handling
 
-| Scenario | Handling |
-|---|---|
-| Unsupported file type uploaded | Validate magic bytes. Show clear error: "This file type isn't supported. We accept: .docx, .md, .html, .djvu, .epub, .odt, .tex" |
-| File too large (>10MB) | Client-side check before upload. Server-side enforcement. Show: "File too large. Maximum size is 10MB." |
-| Conversion fails | Log error, delete temp files, show: "Conversion failed. Please try again or try a different file." Return 500 with user-friendly message. Failed jobs do not consume the free quota. |
-| Conversion timeout (>30s) | Kill subprocess, clean up, show timeout message. |
-| Stripe payment fails | Show Stripe's error message. File is not converted. User can retry. |
-| Stripe webhook delayed | Keep the job in `pending_payment`, exempt it from cleanup, and show "Processing payment..." with polling. |
-| VPS disk full | Monitor disk usage. Alert at 80%. Cleanup cron prevents this. |
-| Concurrent conversions overload | Queue with max 5 concurrent conversions. Additional jobs remain queued; the status endpoint returns queue state for polling. |
-| User refreshes during conversion | Conversion continues server-side. Result available via fileId polling. |
-| Corrupted input file | Pandoc/tools will fail gracefully. Catch error, show user-friendly message. |
+| Scenario                         | Handling                                                                                                                                                                             |
+| -------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| Unsupported file type uploaded   | Validate magic bytes. Show clear error: "This file type isn't supported. We accept: .docx, .md, .html, .djvu, .epub, .odt, .tex"                                                     |
+| File too large (>10MB)           | Client-side check before upload. Server-side enforcement. Show: "File too large. Maximum size is 10MB."                                                                              |
+| Conversion fails                 | Log error, delete temp files, show: "Conversion failed. Please try again or try a different file." Return 500 with user-friendly message. Failed jobs do not consume the free quota. |
+| Conversion timeout (>30s)        | Kill subprocess, clean up, show timeout message.                                                                                                                                     |
+| Stripe payment fails             | Show Stripe's error message. File is not converted. User can retry.                                                                                                                  |
+| Stripe webhook delayed           | Keep the job in `pending_payment`, exempt it from cleanup, and show "Processing payment..." with polling.                                                                            |
+| VPS disk full                    | Monitor disk usage. Alert at 80%. Cleanup cron prevents this.                                                                                                                        |
+| Concurrent conversions overload  | Queue with max 5 concurrent conversions. Additional jobs remain queued; the status endpoint returns queue state for polling.                                                         |
+| User refreshes during conversion | Conversion continues server-side. Result available via fileId polling.                                                                                                               |
+| Corrupted input file             | Pandoc/tools will fail gracefully. Catch error, show user-friendly message.                                                                                                          |
 
 ## Acceptance Criteria & Launch QA
 
@@ -616,17 +628,17 @@ wittyflip/
 
 - Every supported conversion pair must have fixture files checked before launch.
 - Minimum fixture set per format pair:
-  - simple text-only sample
-  - sample with headings/lists
-  - sample with tables or structured content
-  - sample with embedded images or attachments where relevant
-  - corrupted/invalid sample for failure-path testing
+    - simple text-only sample
+    - sample with headings/lists
+    - sample with tables or structured content
+    - sample with embedded images or attachments where relevant
+    - corrupted/invalid sample for failure-path testing
 - Pass criteria for v1:
-  - conversion completes within 30 seconds for supported files under 10MB
-  - output opens in the target format's standard reader/editor
-  - text-based conversions preserve the primary document text and structure well enough to be useful
-  - failed conversions surface a clear message and leave no downloadable artifact
-  - paid conversions do not start until Stripe webhook verification succeeds
+    - conversion completes within 30 seconds for supported files under 10MB
+    - output opens in the target format's standard reader/editor
+    - text-based conversions preserve the primary document text and structure well enough to be useful
+    - failed conversions surface a clear message and leave no downloadable artifact
+    - paid conversions do not start until Stripe webhook verification succeeds
 
 ### Tooling Decisions for v1
 
@@ -641,12 +653,12 @@ Testing is phased to match development velocity. v1 focuses on pipeline reliabil
 
 ### Tooling
 
-| Tool | Purpose |
-|---|---|
-| **Vitest** | Unit and integration tests. Fast, Vite-native, compatible with TanStack Start. |
-| **supertest** | HTTP-level integration tests against API routes without a running server. |
-| **Fixture files** | Real sample documents per format pair for conversion quality validation. |
-| **Playwright** | E2E browser tests (post-launch). |
+| Tool              | Purpose                                                                        |
+| ----------------- | ------------------------------------------------------------------------------ |
+| **Vitest**        | Unit and integration tests. Fast, Vite-native, compatible with TanStack Start. |
+| **supertest**     | HTTP-level integration tests against API routes without a running server.      |
+| **Fixture files** | Real sample documents per format pair for conversion quality validation.       |
+| **Playwright**    | E2E browser tests (post-launch).                                               |
 
 ### v1 Test Scope
 
@@ -654,49 +666,70 @@ Testing is phased to match development velocity. v1 focuses on pipeline reliabil
 
 Test individual modules in isolation with mocked dependencies:
 
-| Module | Key Test Cases |
-|---|---|
-| `file-validation.ts` | Accepts valid magic bytes for each format. Rejects spoofed extensions. Rejects files > 10MB. Handles zero-byte and truncated files. |
-| `rate-limit.ts` | Returns correct remaining count. Resets at UTC midnight. Increments only on successful free conversions. Paid conversions bypass quota. |
-| `queue.ts` | Respects max 5 concurrent jobs. Times out after 30 seconds. Re-entrant guard prevents double-processing. Status transitions follow the lifecycle. |
-| `stripe.ts` | Generates checkout session with correct amount/metadata. Webhook signature verification rejects tampered payloads. Idempotent handler ignores duplicate events. |
-| `conversions.ts` | Lookup by slug returns correct conversion definition. All 7 conversion types are registered. Invalid slugs return undefined. |
-| Converter wrappers | Each wrapper builds the correct command and arguments. Handles non-zero exit codes. Respects AbortSignal for cancellation. |
+| Module               | Key Test Cases                                                                                                                                                            |
+| -------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `file-validation.ts` | Accepts valid magic bytes for each format. Rejects spoofed extensions. Rejects files > 10MB. Handles zero-byte and truncated files.                                       |
+| `request-ip.ts`      | Uses trusted Caddy proxy headers only when the direct peer is trusted. Ignores spoofed `X-Forwarded-For`. Falls back to the direct peer for malformed or missing headers. |
+| `rate-limit.ts`      | Returns correct remaining count. Resets at UTC midnight. Increments only on successful free conversions. Paid conversions bypass quota.                                   |
+| `queue.ts`           | Respects max 5 concurrent jobs. Times out after 30 seconds. Re-entrant guard prevents double-processing. Status transitions follow the lifecycle.                         |
+| `stripe.ts`          | Generates checkout session with correct amount/metadata. Webhook signature verification rejects tampered payloads. Idempotent handler ignores duplicate events.           |
+| `conversions.ts`     | Lookup by slug returns correct conversion definition. All 7 conversion types are registered. Invalid slugs return undefined.                                              |
+| Converter wrappers   | Each wrapper builds the correct command and arguments. Handles non-zero exit codes. Respects AbortSignal for cancellation.                                                |
 
 #### Integration Tests
 
 Test the API route flow end-to-end with a real SQLite database but mocked converter subprocesses:
 
-| Flow | What It Covers |
-|---|---|
-| **Happy path** | Upload file → convert → poll status until completed → download. Verify response shapes, status transitions, and Content-Disposition header. |
-| **Rate limit enforcement** | Two free conversions succeed. Third returns 402 with `payment_required`. Verify rate_limits row incremented correctly. |
-| **Paid conversion flow** | Upload → convert (returns 402) → create-checkout → simulate webhook → verify conversion starts. Payment row created with correct status. |
-| **Failed conversion** | Mock converter returns non-zero exit code. Verify status=failed, error message present, free quota not consumed, no downloadable artifact. |
-| **Timeout** | Mock converter exceeds 30s. Verify status=timeout, process killed, cleanup runs. |
-| **File validation rejection** | Upload with wrong magic bytes. Verify 400 error with clear message. |
-| **Concurrent queue limit** | Enqueue 6 jobs. Verify 5 run concurrently, 6th remains queued. |
-| **Download expiry** | Set expires_at in the past. Verify download returns 404/410. |
+| Flow                          | What It Covers                                                                                                                                                 |
+| ----------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Happy path**                | Upload file → convert → poll status until completed → download. Verify response shapes, status transitions, and Content-Disposition header.                    |
+| **Rate limit enforcement**    | Two free conversions succeed. Third returns 402 with `payment_required`. Verify rate_limits row incremented correctly.                                         |
+| **Paid conversion flow**      | Upload → convert (returns 402) → create-checkout → simulate webhook → verify conversion starts. Payment row created with correct status.                       |
+| **Failed conversion**         | Mock converter returns non-zero exit code. Verify status=failed, error message present, free quota not consumed, no downloadable artifact.                     |
+| **Timeout**                   | Mock converter exceeds 30s. Verify status=timeout, process killed, cleanup runs.                                                                               |
+| **File validation rejection** | Upload with wrong magic bytes. Verify 400 error with clear message.                                                                                            |
+| **Concurrent queue limit**    | Enqueue 6 jobs. Verify 5 run concurrently, 6th remains queued.                                                                                                 |
+| **Download expiry**           | Set expires_at in the past. Verify download returns 404/410.                                                                                                   |
+| **Rate limit status**         | Call `GET /api/rate-limit-status`. Verify `{ remaining, limit, resetAt }` matches the current DB state for the resolved client IP.                             |
+| **Trusted proxy handling**    | Spoof `X-Forwarded-For` from an untrusted peer and verify it is ignored. Send the same header from a trusted Caddy peer and verify the leftmost value is used. |
+
+#### Observability Tests
+
+| Surface                       | What It Covers                                                                                                               |
+| ----------------------------- | ---------------------------------------------------------------------------------------------------------------------------- |
+| **`GET /health`**             | Returns 200 when app + SQLite are healthy and 503 when DB access fails.                                                      |
+| **`GET /metrics` auth**       | Rejects missing/invalid bearer tokens and accepts the configured API key.                                                    |
+| **Metrics shape + disk math** | Validates response shape, `totalBytes`, and filesystem-relative `usedPercent` against mocked filesystem stats.               |
+| **Structured logs**           | Verifies standard log field shape and redaction/truncation of IPs, auth headers, Stripe secrets, and other sensitive values. |
+| **Alert deduplication**       | Threshold breach sends one alert, repeats are suppressed for 1 hour, then alerting resumes after the dedupe window.          |
 
 #### Fixture Tests (Conversion Quality)
 
 Each of the 7 format pairs has a fixture matrix validated before launch:
 
-| Fixture Type | Purpose |
-|---|---|
-| Simple text-only | Baseline: plain paragraphs convert correctly |
-| Headings + lists | Structure preservation (H1-H3, ordered/unordered lists) |
-| Tables / structured content | Table rendering in target format |
-| Embedded images / attachments | Image extraction or embedding where the format supports it |
-| Corrupted / invalid file | Converter fails gracefully with a clear error, no partial output |
+| Fixture Type                  | Purpose                                                          |
+| ----------------------------- | ---------------------------------------------------------------- |
+| Simple text-only              | Baseline: plain paragraphs convert correctly                     |
+| Headings + lists              | Structure preservation (H1-H3, ordered/unordered lists)          |
+| Tables / structured content   | Table rendering in target format                                 |
+| Embedded images / attachments | Image extraction or embedding where the format supports it       |
+| Corrupted / invalid file      | Converter fails gracefully with a clear error, no partial output |
 
 **Pass criteria:**
+
 - Conversion completes within 30 seconds for files under 10MB
 - Output opens in the target format's standard reader/editor
 - Text-based conversions preserve primary document text and structure
 - Failed conversions surface a clear message and leave no downloadable artifact
 
 Fixture files are committed to the repository under `tests/fixtures/{conversion-type}/`.
+
+#### Test Harness
+
+- `package.json` defines `npm test`, `npm run test:watch`, and `npm run test:fixtures`
+- `vitest.config.ts` configures the Node test environment, setup hooks, aliases, and fixture-suite separation
+- `tests/setup.ts` isolates temp directories, SQLite state, mocks, and fake timers between tests
+- `tests/helpers/create-test-app.ts` mounts both TanStack `createServerFn` handlers and raw h3 routes into one app for `supertest`
 
 #### Test Execution
 
@@ -709,11 +742,11 @@ npm run test:fixtures # Run fixture/conversion quality tests (requires Docker wi
 
 ### Post-Launch Testing
 
-| Addition | When |
-|---|---|
+| Addition              | When                                                                                                                              |
+| --------------------- | --------------------------------------------------------------------------------------------------------------------------------- |
 | **E2E browser tests** | After UI is stable. Playwright tests covering: upload drag-and-drop, progress polling, download, payment prompt, mobile viewport. |
-| **CI pipeline** | After launch. GitHub Actions with Docker-based runner for integration + fixture tests on every PR. |
-| **Load testing** | After initial traffic. Validate VPS handles concurrent uploads and conversions under realistic load. |
+| **CI pipeline**       | After launch. GitHub Actions with Docker-based runner for integration + fixture tests on every PR.                                |
+| **Load testing**      | After initial traffic. Validate VPS handles concurrent uploads and conversions under realistic load.                              |
 
 ## Observability
 
@@ -721,19 +754,20 @@ npm run test:fixtures # Run fixture/conversion quality tests (requires Docker wi
 
 **Library:** Pino (JSON output to stdout, collected by Docker).
 
-| Field | Description |
-|---|---|
-| `timestamp` | ISO 8601 timestamp |
-| `level` | Log level (info, warn, error) |
-| `msg` | Human-readable message |
-| `conversionId` | UUID linking all log entries for a single conversion job |
-| `requestId` | UUID per HTTP request for tracing |
-| `ip` | Client IP (hashed or truncated for privacy in logs) |
-| `conversionType` | e.g., `docx-to-markdown` |
-| `durationMs` | Processing time for timed operations |
-| `error` | Error object with message and stack (error level only) |
+| Field            | Description                                              |
+| ---------------- | -------------------------------------------------------- |
+| `timestamp`      | ISO 8601 timestamp                                       |
+| `level`          | Log level (info, warn, error)                            |
+| `msg`            | Human-readable message                                   |
+| `conversionId`   | UUID linking all log entries for a single conversion job |
+| `requestId`      | UUID per HTTP request for tracing                        |
+| `ip`             | Client IP (hashed or truncated for privacy in logs)      |
+| `conversionType` | e.g., `docx-to-markdown`                                 |
+| `durationMs`     | Processing time for timed operations                     |
+| `error`          | Error object with message and stack (error level only)   |
 
 **Log points:**
+
 - Request received (info): method, path, IP
 - File uploaded (info): conversionId, format, file size
 - Rate limit checked (info): IP, remaining quota
@@ -758,6 +792,7 @@ Returns `200 OK` when the application is running and SQLite is accessible. Retur
 ```
 
 Used by:
+
 - **UptimeRobot** (free tier) for external uptime monitoring
 - **Docker HEALTHCHECK** directive for container restart on failure
 
@@ -770,33 +805,36 @@ Authorization: Bearer <METRICS_API_KEY>
 
 Returns operational metrics for alerting scripts and manual inspection. Protected by a shared API key (set via environment variable `METRICS_API_KEY`).
 
+`usedPercent` is filesystem-relative: `usedBytes / totalBytes * 100`, where `totalBytes` is the total capacity of the mounted filesystem containing the conversions directory.
+
 ```json
 {
-  "disk": {
-    "conversionsDir": {
-      "usedBytes": 52428800,
-      "usedPercent": 12.5,
-      "fileCount": 47
-    }
-  },
-  "queue": {
-    "activeJobs": 3,
-    "queuedJobs": 1,
-    "maxConcurrent": 5
-  },
-  "conversions": {
-    "last1h": {
-      "total": 42,
-      "successful": 38,
-      "failed": 3,
-      "timeout": 1,
-      "successRate": 90.5,
-      "avgDurationMs": 4200
+    "disk": {
+        "conversionsDir": {
+            "usedBytes": 52428800,
+            "totalBytes": 419430400,
+            "usedPercent": 12.5,
+            "fileCount": 47
+        }
     },
-    "lastSuccessfulAt": "2026-03-08T14:32:00Z"
-  },
-  "uptime": 86400,
-  "timestamp": "2026-03-08T15:00:00Z"
+    "queue": {
+        "activeJobs": 3,
+        "queuedJobs": 1,
+        "maxConcurrent": 5
+    },
+    "conversions": {
+        "last1h": {
+            "total": 42,
+            "successful": 38,
+            "failed": 3,
+            "timeout": 1,
+            "successRate": 90.5,
+            "avgDurationMs": 4200
+        },
+        "lastSuccessfulAt": "2026-03-08T14:32:00Z"
+    },
+    "uptime": 86400,
+    "timestamp": "2026-03-08T15:00:00Z"
 }
 ```
 
@@ -804,14 +842,14 @@ Returns operational metrics for alerting scripts and manual inspection. Protecte
 
 The `conversions` table serves as the analytics store. Key queries for operational insight:
 
-| Metric | Query Basis |
-|---|---|
-| Success rate by format | `GROUP BY conversion_type, status` |
-| Average conversion time | `AVG(conversion_time_ms) GROUP BY conversion_type` |
-| Error breakdown | `GROUP BY conversion_type, error_message WHERE status = 'failed'` |
-| Paid vs free ratio | `GROUP BY was_paid` |
-| Hourly/daily volume | `GROUP BY strftime('%Y-%m-%d %H', created_at)` |
-| Slowest conversions | `ORDER BY conversion_time_ms DESC LIMIT 10` |
+| Metric                  | Query Basis                                                       |
+| ----------------------- | ----------------------------------------------------------------- |
+| Success rate by format  | `GROUP BY conversion_type, status`                                |
+| Average conversion time | `AVG(conversion_time_ms) GROUP BY conversion_type`                |
+| Error breakdown         | `GROUP BY conversion_type, error_message WHERE status = 'failed'` |
+| Paid vs free ratio      | `GROUP BY was_paid`                                               |
+| Hourly/daily volume     | `GROUP BY strftime('%Y-%m-%d %H', created_at)`                    |
+| Slowest conversions     | `ORDER BY conversion_time_ms DESC LIMIT 10`                       |
 
 No external analytics dashboard for v1. Query SQLite directly via SSH or build simple admin queries as needed.
 
@@ -821,13 +859,13 @@ A lightweight Node.js script runs on the VPS via cron (every 5 minutes), queries
 
 #### Alert Thresholds
 
-| Condition | Threshold | Severity |
-|---|---|---|
-| Disk usage | > 80% of conversions directory | Critical |
-| Queue depth | > 20 queued jobs | Warning |
-| Error rate | > 25% of conversions in the last hour | Critical |
-| No successful conversion | > 30 minutes since last success (while jobs exist) | Warning |
-| App down | /health returns non-200 | Critical |
+| Condition                | Threshold                                          | Severity |
+| ------------------------ | -------------------------------------------------- | -------- |
+| Disk usage               | > 80% of conversions directory                     | Critical |
+| Queue depth              | > 20 queued jobs                                   | Warning  |
+| Error rate               | > 25% of conversions in the last hour              | Critical |
+| No successful conversion | > 30 minutes since last success (while jobs exist) | Warning  |
+| App down                 | /health returns non-200                            | Critical |
 
 #### Alert Configuration
 
@@ -854,13 +892,13 @@ Alerts include: metric name, current value, threshold, timestamp, and link to VP
 
 ### Risks
 
-| Risk | Likelihood | Impact | Mitigation |
-|---|---|---|---|
-| Low search traffic for niche keywords | Medium | High | Validate with Google Keyword Planner before launch. Expand to more formats quickly. |
-| Conversion quality issues | Medium | Medium | Test extensively. Show format-specific warnings. Allow user feedback. |
-| Server resource limits on $5 VPS | Low | Medium | LibreOffice is heavy. Monitor RAM. Upgrade VPS if needed ($10-20/mo). |
-| Abuse / scraping | Low | Low | Rate limiting + IP tracking. Can add CAPTCHA if needed. |
-| Stripe regulatory issues | Low | High | Verify Stripe availability in your country early. |
+| Risk                                  | Likelihood | Impact | Mitigation                                                                          |
+| ------------------------------------- | ---------- | ------ | ----------------------------------------------------------------------------------- |
+| Low search traffic for niche keywords | Medium     | High   | Validate with Google Keyword Planner before launch. Expand to more formats quickly. |
+| Conversion quality issues             | Medium     | Medium | Test extensively. Show format-specific warnings. Allow user feedback.               |
+| Server resource limits on $5 VPS      | Low        | Medium | LibreOffice is heavy. Monitor RAM. Upgrade VPS if needed ($10-20/mo).               |
+| Abuse / scraping                      | Low        | Low    | Rate limiting + IP tracking. Can add CAPTCHA if needed.                             |
+| Stripe regulatory issues              | Low        | High   | Verify Stripe availability in your country early.                                   |
 
 ## Out of Scope (for v1)
 
