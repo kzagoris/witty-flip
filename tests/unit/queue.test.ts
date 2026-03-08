@@ -345,7 +345,7 @@ describe('runConversion — timeout path', () => {
 
 // ---------------------------------------------------------------------------
 
-describe('runConversion — missing metadata / converter', () => {
+describe('runConversion — missing metadata / unavailable tool', () => {
   it('sets status=failed for an unknown conversionType', async () => {
     const id = await seed({ conversionType: 'bogus-type', status: 'queued' })
     await processQueue()
@@ -354,13 +354,14 @@ describe('runConversion — missing metadata / converter', () => {
     expect(row?.errorMessage).toMatch(/unknown/i)
   })
 
-  it('sets status=failed when the converter is not registered', async () => {
-    // No converter registered for 'pandoc'; conversionType is valid.
+  it('auto-bootstraps converters and sets status=failed when the tool binary is missing', async () => {
+    // registerAllConverters() is called on demand; the real pandoc binary is not
+    // available in the test environment, so the conversion fails with an ENOENT error.
     const id = await seed({ status: 'queued' })
     await processQueue()
     const row = await waitForStatus(id, 'failed')
     expect(row?.status).toBe('failed')
-    expect(row?.errorMessage).not.toMatch(/not available/i)
+    expect(row?.errorMessage).toMatch(/not installed/i)
   })
 })
 
