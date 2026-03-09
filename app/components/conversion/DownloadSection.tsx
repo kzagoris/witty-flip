@@ -46,9 +46,9 @@ export function DownloadSection({ downloadUrl, expiresAt, targetFormat, onReset,
   const countdown = useCountdown(expiresAt, onExpired)
 
   return (
-    <Card className="animate-fade-in border-green-200 bg-green-50">
+    <Card className="motion-safe:animate-celebrate border-green-200 bg-green-50">
       <CardContent className="flex flex-col items-center gap-4 p-6 text-center">
-        <div className="rounded-full bg-green-100 p-3 text-green-600">
+        <div className="rounded-full bg-green-100 p-3 text-green-600 motion-safe:animate-bounce-in">
           <Download className="h-8 w-8" />
         </div>
 
@@ -61,7 +61,7 @@ export function DownloadSection({ downloadUrl, expiresAt, targetFormat, onReset,
           </p>
         </div>
 
-        <Button asChild size="lg" className="bg-green-600 hover:bg-green-700">
+        <Button asChild size="lg" className="bg-green-600 hover:bg-green-700 motion-safe:animate-bounce-subtle">
           <a href={downloadUrl} download>
             <Download className="h-4 w-4" />
             Download {targetFormat.toUpperCase()}

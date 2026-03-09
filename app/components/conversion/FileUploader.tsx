@@ -89,11 +89,11 @@ export function FileUploader({
         <div
           className={cn(
             'mb-3 rounded-full p-3 transition-colors',
-            isDragging ? 'bg-primary/10 text-primary' : 'bg-neutral-100 text-neutral-500',
+            isDragging ? 'bg-primary/10 text-primary' : 'bg-neutral-100 text-neutral-500 motion-safe:animate-pulse-border',
           )}
         >
           {isDragging ? (
-            <FileIcon className="h-8 w-8" />
+            <FileIcon className="h-8 w-8 motion-safe:animate-slide-in-right" />
           ) : (
             <Upload className="h-8 w-8" />
           )}

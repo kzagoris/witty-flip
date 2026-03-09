@@ -10,7 +10,7 @@ interface ErrorCardProps {
 
 export function ErrorCard({ errorCode, message, onRetry }: ErrorCardProps) {
   return (
-    <div className="animate-fade-in space-y-3">
+    <div className="motion-safe:animate-shake space-y-3">
       <Alert variant="destructive">
         <AlertCircle className="h-4 w-4" />
         <AlertTitle>

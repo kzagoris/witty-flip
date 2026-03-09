@@ -16,8 +16,11 @@ export function RelatedConversions({ slugs }: { slugs: string[] }) {
       <h2 className="mb-4 font-heading text-2xl font-bold">Related Conversions</h2>
       <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
         {related.map((c) => (
-          <Link key={c.slug} to="/$conversionType" params={{ conversionType: c.slug }}>
-            <Card className="transition-shadow hover:shadow-md">
+          <Link key={c.slug} to="/$conversionType" params={{ conversionType: c.slug }} className="group">
+            <Card
+              className="cursor-pointer transition-all duration-200 hover:shadow-md motion-safe:hover:scale-[1.02] border-l-4 border-l-transparent hover:border-l-[var(--card-accent)]"
+              style={{ '--card-accent': c.formatColor } as React.CSSProperties}
+            >
               <CardHeader className="p-4">
                 <div className="flex items-center gap-2">
                   <Badge
@@ -27,7 +30,7 @@ export function RelatedConversions({ slugs }: { slugs: string[] }) {
                   >
                     {c.sourceFormat.toUpperCase()}
                   </Badge>
-                  <ArrowRight className="h-3 w-3 text-muted-foreground" />
+                  <ArrowRight className="h-3 w-3 text-muted-foreground transition-transform duration-200 group-hover:translate-x-0.5" />
                   <Badge variant="outline">{c.targetFormat.toUpperCase()}</Badge>
                 </div>
                 <CardTitle className="mt-1 text-sm font-medium">

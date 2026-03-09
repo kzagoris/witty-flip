@@ -7,7 +7,10 @@ import type { ConversionSummary } from '~/lib/conversion-summaries'
 export function ConversionCard({ conversion }: { conversion: ConversionSummary }) {
   return (
     <Link to="/$conversionType" params={{ conversionType: conversion.slug }}>
-      <Card className="group h-full transition-shadow hover:shadow-lg">
+      <Card
+        className="group h-full cursor-pointer transition-all duration-200 hover:shadow-lg motion-safe:hover:scale-[1.02] border-l-4 border-l-transparent hover:border-l-[var(--card-accent)]"
+        style={{ '--card-accent': conversion.formatColor } as React.CSSProperties}
+      >
         <CardHeader>
           <div className="mb-2 flex items-center gap-2">
             <Badge
@@ -17,7 +20,7 @@ export function ConversionCard({ conversion }: { conversion: ConversionSummary }
             >
               {conversion.sourceFormat.toUpperCase()}
             </Badge>
-            <ArrowRight className="h-3.5 w-3.5 text-muted-foreground" />
+            <ArrowRight className="h-3.5 w-3.5 text-muted-foreground transition-transform duration-200 group-hover:translate-x-0.5" />
             <Badge variant="outline">
               {conversion.targetFormat.toUpperCase()}
             </Badge>
