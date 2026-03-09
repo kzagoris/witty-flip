@@ -46,6 +46,7 @@ Upload (POST /api/upload) → Rate Limit Check (POST /api/convert) → [Payment 
 ### Database Tables
 
 Three tables in SQLite via Drizzle ORM (`app/lib/db/schema.ts`):
+
 - **conversions** — job tracking with status lifecycle: `uploaded → payment_required/pending_payment → queued → converting → completed/failed/timeout/expired`
 - **rate_limits** — IP + date tracking for daily free quota
 - **payments** — Stripe session/payment records linked to conversions
@@ -63,6 +64,7 @@ Each conversion tool has a wrapper in `app/lib/converters/` (pandoc.ts, libreoff
 ### Converter Wrappers
 
 Six converters in `app/lib/converters/`, each using shared infrastructure:
+
 - **Shared:** `spawn-helper.ts` (subprocess with AbortSignal), `converter-run.ts` (common convert logic), `sanitize-error.ts` (path redaction + ANSI stripping), `register-all.ts` (idempotent bootstrap)
 - **pandoc.ts** — DOCX→MD, MD→PDF (via weasyprint engine), ODT→DOCX
 - **djvulibre.ts** — DJVU→PDF via `ddjvu`
@@ -74,6 +76,7 @@ Six converters in `app/lib/converters/`, each using shared infrastructure:
 ### API Routes
 
 **Server functions** (TanStack `createServerFn` in `app/server/api/`):
+
 - `upload.ts` — `POST /api/upload` (FormData): validate, save file, insert DB row
 - `convert.ts` — `POST /api/convert` ({ fileId }): rate-limit check, atomic slot reservation, enqueue or return 402
 - `conversion-status.ts` — `GET /api/conversion/{fileId}/status`: poll status, check artifact/expiry
@@ -81,6 +84,7 @@ Six converters in `app/lib/converters/`, each using shared infrastructure:
 - `create-checkout.ts` — `POST /api/create-checkout` ({ fileId }): create/reuse Stripe session
 
 **File-based route handlers** (`app/routes/api/`):
+
 - `download/$fileId.tsx` — `GET /api/download/{fileId}`: stream file with Content-Disposition
 - `webhook/stripe.tsx` — `POST /api/webhook/stripe`: verify signature, handle `checkout.session.completed`
 - `health.tsx` — `GET /api/health`: returns `{ status: 'ok' }`
@@ -101,25 +105,26 @@ Six converters in `app/lib/converters/`, each using shared infrastructure:
 ### Testing
 
 170 tests across 15 files (Vitest, Node environment):
+
 - **Unit tests** (`tests/unit/`): converters, rate limiting, IP resolution, file validation, queue, Stripe, conversions registry
 - **Integration tests** (`tests/integration/api.test.ts`): full upload→convert→poll→download flows, rate limiting, paid conversion, webhook idempotency
 - **Helpers:** `tests/helpers/create-test-app.ts` (HTTP harness via supertest), `tests/helpers/test-env.ts` (sandbox isolation, temp dirs, DB reset)
 
 ### Key Modules
 
-| Module | File | Notes |
-|--------|------|-------|
-| Conversion definitions | `app/lib/conversions.ts` | 7 types with SEO/FAQ data, lookup by slug |
-| File validation | `app/lib/file-validation.ts` | Magic bytes (DjVu header), ZIP-based, UTF-8 text |
-| Rate limiting | `app/lib/rate-limit.ts` | Atomic reservation model, 2 free/day per IP |
-| Request throttling | `app/lib/request-rate-limit.ts` | 10 req/min/IP, in-memory buckets |
-| IP resolution | `app/lib/request-ip.ts` | Trusted-proxy X-Forwarded-For, IPv4/v6 normalization |
-| Converter registry | `app/lib/converters/index.ts` | `Converter` interface with AbortSignal |
-| Queue | `app/lib/queue.ts` | Max 5 concurrent, 30s timeout, re-entrant guard |
-| Stripe | `app/lib/stripe.ts` | Checkout, webhook verification, idempotent handler |
-| File paths | `app/lib/conversion-files.ts` | Canonical `data/conversions/{uuid}.{ext}` paths |
-| Server init | `app/lib/server-runtime.ts` | Centralized converter registration |
-| API contracts | `app/server/api/contracts.ts` | Shared types, status helpers, UUID validation |
+| Module                 | File                            | Notes                                                |
+| ---------------------- | ------------------------------- | ---------------------------------------------------- |
+| Conversion definitions | `app/lib/conversions.ts`        | 7 types with SEO/FAQ data, lookup by slug            |
+| File validation        | `app/lib/file-validation.ts`    | Magic bytes (DjVu header), ZIP-based, UTF-8 text     |
+| Rate limiting          | `app/lib/rate-limit.ts`         | Atomic reservation model, 2 free/day per IP          |
+| Request throttling     | `app/lib/request-rate-limit.ts` | 10 req/min/IP, in-memory buckets                     |
+| IP resolution          | `app/lib/request-ip.ts`         | Trusted-proxy X-Forwarded-For, IPv4/v6 normalization |
+| Converter registry     | `app/lib/converters/index.ts`   | `Converter` interface with AbortSignal               |
+| Queue                  | `app/lib/queue.ts`              | Max 5 concurrent, 30s timeout, re-entrant guard      |
+| Stripe                 | `app/lib/stripe.ts`             | Checkout, webhook verification, idempotent handler   |
+| File paths             | `app/lib/conversion-files.ts`   | Canonical `data/conversions/{uuid}.{ext}` paths      |
+| Server init            | `app/lib/server-runtime.ts`     | Centralized converter registration                   |
+| API contracts          | `app/server/api/contracts.ts`   | Shared types, status helpers, UUID validation        |
 
 ## Security Constraints
 
@@ -138,3 +143,4 @@ Six converters in `app/lib/converters/`, each using shared infrastructure:
 
 - Never create git worktrees. Always implement changes directly in the current repository.
 - Never create pull requests. All work happens directly on the main branch.
+- When fixing a bug, add or update a test in the same implementation so the regression is covered.
