@@ -31,7 +31,7 @@ export const pdflatexConverter: Converter = {
           inputPath,
         ],
         signal,
-        { cwd: tmpDir },
+        { cwd: tmpDir, windowsHide: true },
       )
 
       const durationMs = Date.now() - start

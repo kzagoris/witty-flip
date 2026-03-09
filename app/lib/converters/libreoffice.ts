@@ -2,6 +2,7 @@ import path from 'node:path'
 import fs from 'node:fs/promises'
 import os from 'node:os'
 import { randomUUID } from 'node:crypto'
+import { pathToFileURL } from 'node:url'
 import type { Converter, ConvertResult } from '~/lib/converters/index'
 import { spawnWithSignal } from '~/lib/converters/spawn-helper'
 import { buildErrorResult } from '~/lib/converters/converter-run'
@@ -31,10 +32,11 @@ export const libreofficeConverter: Converter = {
           '--headless',
           '--convert-to', outputFormat,
           '--outdir', outDir,
-          `-env:UserInstallation=file://${profileDir}`,
+          `-env:UserInstallation=${pathToFileURL(profileDir).href}`,
           inputPath,
         ],
         signal,
+        { windowsHide: true },
       )
 
       const durationMs = Date.now() - start

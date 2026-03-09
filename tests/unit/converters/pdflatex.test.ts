@@ -59,7 +59,7 @@ describe('pdflatex converter', () => {
     expect(args.some((a: string) => a.startsWith('-output-directory='))).toBe(true)
     expect(args).toContain(INPUT)
     expect(signal).toBeInstanceOf(AbortSignal)
-    expect(opts).toEqual({ cwd: '/tmp/pdflatex-abc123' })
+    expect(opts).toEqual({ cwd: '/tmp/pdflatex-abc123', windowsHide: true })
   })
 
   it('renames generated PDF to expected outputPath on success', async () => {
