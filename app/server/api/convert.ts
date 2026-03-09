@@ -1,13 +1,4 @@
-import { eq } from 'drizzle-orm'
-import { createServerFn } from '@tanstack/react-start'
-import { setResponseStatus } from '@tanstack/react-start/server'
-import { db } from '~/lib/db'
-import { conversions } from '~/lib/db/schema'
-import { checkRateLimit, releaseRateLimitSlot, reserveRateLimitSlot } from '~/lib/rate-limit'
-import { checkAndConsumeRequestRateLimit } from '~/lib/request-rate-limit'
-import { resolveClientIp, resolveClientIpFromRequest } from '~/lib/request-ip'
-import { initializeServerRuntime } from '~/lib/server-runtime'
-import { enqueueJob } from '~/lib/queue'
+import { createServerFn, createServerOnlyFn } from '@tanstack/react-start'
 import {
   errorResult,
   isRecord,
@@ -16,7 +7,77 @@ import {
   type ApiResult,
   type ConversionStatusResponse,
 } from './contracts'
-import { buildConversionStatusPayload } from './status-utils'
+
+interface ConvertServerDeps {
+  eq: typeof import('drizzle-orm').eq
+  db: typeof import('~/lib/db').db
+  conversions: typeof import('~/lib/db/schema').conversions
+  checkRateLimit: typeof import('~/lib/rate-limit').checkRateLimit
+  releaseRateLimitSlot: typeof import('~/lib/rate-limit').releaseRateLimitSlot
+  reserveRateLimitSlot: typeof import('~/lib/rate-limit').reserveRateLimitSlot
+  checkAndConsumeRequestRateLimit: typeof import('~/lib/request-rate-limit').checkAndConsumeRequestRateLimit
+  initializeServerRuntime: typeof import('~/lib/server-runtime').initializeServerRuntime
+  enqueueJob: typeof import('~/lib/queue').enqueueJob
+  buildConversionStatusPayload: typeof import('./status-utils').buildConversionStatusPayload
+}
+
+let convertServerDepsPromise: Promise<ConvertServerDeps> | undefined
+
+const getConvertServerDeps = createServerOnlyFn(async (): Promise<ConvertServerDeps> => {
+  convertServerDepsPromise ??= Promise.all([
+    import('drizzle-orm'),
+    import('~/lib/db'),
+    import('~/lib/db/schema'),
+    import('~/lib/rate-limit'),
+    import('~/lib/request-rate-limit'),
+    import('~/lib/server-runtime'),
+    import('~/lib/queue'),
+    import('./status-utils'),
+  ]).then(([
+    drizzleOrmModule,
+    dbModule,
+    schemaModule,
+    rateLimitModule,
+    requestRateLimitModule,
+    serverRuntimeModule,
+    queueModule,
+    statusUtilsModule,
+  ]) => ({
+    eq: drizzleOrmModule.eq,
+    db: dbModule.db,
+    conversions: schemaModule.conversions,
+    checkRateLimit: rateLimitModule.checkRateLimit,
+    releaseRateLimitSlot: rateLimitModule.releaseRateLimitSlot,
+    reserveRateLimitSlot: rateLimitModule.reserveRateLimitSlot,
+    checkAndConsumeRequestRateLimit: requestRateLimitModule.checkAndConsumeRequestRateLimit,
+    initializeServerRuntime: serverRuntimeModule.initializeServerRuntime,
+    enqueueJob: queueModule.enqueueJob,
+    buildConversionStatusPayload: statusUtilsModule.buildConversionStatusPayload,
+  }))
+
+  return convertServerDepsPromise
+})
+
+interface ConvertRequestContextDeps {
+  setResponseStatus: typeof import('@tanstack/react-start/server').setResponseStatus
+  resolveClientIp: typeof import('~/lib/request-ip').resolveClientIp
+  resolveClientIpFromRequest: typeof import('~/lib/request-ip').resolveClientIpFromRequest
+}
+
+let convertRequestContextPromise: Promise<ConvertRequestContextDeps> | undefined
+
+const getConvertRequestContext = createServerOnlyFn(async (): Promise<ConvertRequestContextDeps> => {
+  convertRequestContextPromise ??= Promise.all([
+    import('@tanstack/react-start/server'),
+    import('~/lib/request-ip'),
+  ]).then(([serverModule, requestIpModule]) => ({
+    setResponseStatus: serverModule.setResponseStatus,
+    resolveClientIp: requestIpModule.resolveClientIp,
+    resolveClientIpFromRequest: requestIpModule.resolveClientIpFromRequest,
+  }))
+
+  return convertRequestContextPromise
+})
 
 function parseFileIdInput(data: unknown): string | undefined {
   if (!isRecord(data) || typeof data['fileId'] !== 'string') {
@@ -31,6 +92,19 @@ export async function processConvert(
   data: unknown,
   clientIp: string,
 ): Promise<ApiResult<ConversionStatusResponse | ApiErrorResponse>> {
+  const {
+    eq,
+    db,
+    conversions,
+    checkRateLimit,
+    releaseRateLimitSlot,
+    reserveRateLimitSlot,
+    checkAndConsumeRequestRateLimit,
+    initializeServerRuntime,
+    enqueueJob,
+    buildConversionStatusPayload,
+  } = await getConvertServerDeps()
+
   initializeServerRuntime()
 
   const requestLimit = checkAndConsumeRequestRateLimit(clientIp)
@@ -153,6 +227,8 @@ export async function handleConvertHttpRequest(
   request: Request,
   peerIp?: string,
 ): Promise<Response> {
+  const { resolveClientIpFromRequest } = await getConvertRequestContext()
+
   const result = await processConvert(
     await request.json(),
     resolveClientIpFromRequest(request, peerIp),
@@ -161,6 +237,8 @@ export async function handleConvertHttpRequest(
 }
 
 export const convertFile = createServerFn({ method: 'POST' }).handler(async ({ data }) => {
+  const { setResponseStatus, resolveClientIp } = await getConvertRequestContext()
+
   const result = await processConvert(data, resolveClientIp())
   setResponseStatus(result.status)
   return result.body

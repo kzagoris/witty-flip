@@ -1,19 +1,68 @@
-import fs from 'node:fs/promises'
-import path from 'node:path'
-import { Readable } from 'node:stream'
-import { eq } from 'drizzle-orm'
 import { createFileRoute } from '@tanstack/react-router'
-import { db } from '~/lib/db'
-import { conversions } from '~/lib/db/schema'
-import { getStoredOutputPath } from '~/lib/conversion-files'
-import { getConversionBySlug } from '~/lib/conversions'
-import { checkAndConsumeRequestRateLimit } from '~/lib/request-rate-limit'
-import { resolveClientIp } from '~/lib/request-ip'
-import { initializeServerRuntime } from '~/lib/server-runtime'
+import { createServerOnlyFn } from '@tanstack/react-start'
 import { errorResult, isUuid, normalizeConversionStatus } from '~/server/api/contracts'
 
+interface DownloadServerDeps {
+  fsModule: typeof import('node:fs/promises')
+  pathModule: typeof import('node:path')
+  Readable: typeof import('node:stream').Readable
+  eq: typeof import('drizzle-orm').eq
+  db: typeof import('~/lib/db').db
+  conversions: typeof import('~/lib/db/schema').conversions
+  getStoredOutputPath: typeof import('~/lib/conversion-files').getStoredOutputPath
+  getConversionBySlug: typeof import('~/lib/conversions').getConversionBySlug
+  checkAndConsumeRequestRateLimit: typeof import('~/lib/request-rate-limit').checkAndConsumeRequestRateLimit
+  resolveClientIp: typeof import('~/lib/request-ip').resolveClientIp
+  initializeServerRuntime: typeof import('~/lib/server-runtime').initializeServerRuntime
+}
+
+let downloadServerDepsPromise: Promise<DownloadServerDeps> | undefined
+
+const getDownloadServerDeps = createServerOnlyFn(async (): Promise<DownloadServerDeps> => {
+  downloadServerDepsPromise ??= Promise.all([
+    import('node:fs/promises'),
+    import('node:path'),
+    import('node:stream'),
+    import('drizzle-orm'),
+    import('~/lib/db'),
+    import('~/lib/db/schema'),
+    import('~/lib/conversion-files'),
+    import('~/lib/conversions'),
+    import('~/lib/request-rate-limit'),
+    import('~/lib/request-ip'),
+    import('~/lib/server-runtime'),
+  ]).then(([
+    fsModule,
+    pathModule,
+    streamModule,
+    drizzleOrmModule,
+    dbModule,
+    schemaModule,
+    conversionFilesModule,
+    conversionsModule,
+    requestRateLimitModule,
+    requestIpModule,
+    serverRuntimeModule,
+  ]) => ({
+    fsModule,
+    pathModule,
+    Readable: streamModule.Readable,
+    eq: drizzleOrmModule.eq,
+    db: dbModule.db,
+    conversions: schemaModule.conversions,
+    getStoredOutputPath: conversionFilesModule.getStoredOutputPath,
+    getConversionBySlug: conversionsModule.getConversionBySlug,
+    checkAndConsumeRequestRateLimit: requestRateLimitModule.checkAndConsumeRequestRateLimit,
+    resolveClientIp: requestIpModule.resolveClientIp,
+    initializeServerRuntime: serverRuntimeModule.initializeServerRuntime,
+  }))
+
+  return downloadServerDepsPromise
+})
+
 function sanitizeDownloadFilename(originalFilename: string, targetExtension: string) {
-  const basename = path.parse(originalFilename).name
+  const basename = originalFilename
+    .replace(/\.[^.]*$/, '')
     .replace(/[\\/:*?"<>|]/g, '')
     .replace(/\p{Cc}/gu, '')
     .trim()
@@ -35,6 +84,18 @@ export async function handleDownloadRequest(
   fileId: string,
   clientIp?: string,
 ): Promise<Response> {
+  const {
+    fsModule,
+    Readable,
+    eq,
+    db,
+    conversions,
+    getStoredOutputPath,
+    getConversionBySlug,
+    checkAndConsumeRequestRateLimit,
+    initializeServerRuntime,
+  } = await getDownloadServerDeps()
+
   initializeServerRuntime()
 
   if (clientIp) {
@@ -100,9 +161,9 @@ export async function handleDownloadRequest(
 
   const outputPath = getStoredOutputPath(fileId, conversionMeta.targetExtension)
 
-  let handle: fs.FileHandle
+  let handle: import('node:fs/promises').FileHandle
   try {
-    handle = await fs.open(outputPath, 'r')
+    handle = await fsModule.open(outputPath, 'r')
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
       const result = errorResult(404, 'artifact_missing', 'The converted file is no longer available.', {
@@ -135,7 +196,10 @@ export async function handleDownloadRequest(
 export const Route = createFileRoute('/api/download/$fileId')({
   server: {
     handlers: {
-      GET: async ({ params }) => handleDownloadRequest(params.fileId, resolveClientIp()),
+      GET: async ({ params }) => {
+        const { resolveClientIp } = await getDownloadServerDeps()
+        return handleDownloadRequest(params.fileId, resolveClientIp())
+      },
     },
   },
 })

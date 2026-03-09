@@ -1,13 +1,19 @@
 import fs from 'node:fs/promises'
-import { eq } from 'drizzle-orm'
-import { db } from '~/lib/db'
-import { conversions } from '~/lib/db/schema'
 import { getStoredOutputPath } from '~/lib/conversion-files'
 import { getConversionBySlug } from '~/lib/conversions'
 import { statusToProgress, type ConversionStatusResponse } from './contracts'
 
+interface ConversionStatusRecord {
+  id: string
+  status: string | null
+  expiresAt: string | null
+  conversionType: string
+  errorMessage: string | null
+  [key: string]: unknown
+}
+
 export async function buildConversionStatusPayload(
-  conversion: typeof conversions.$inferSelect,
+  conversion: ConversionStatusRecord,
 ): Promise<ConversionStatusResponse> {
   if (
     (conversion.status === 'completed' || conversion.status === 'expired')
@@ -15,6 +21,12 @@ export async function buildConversionStatusPayload(
     && new Date(conversion.expiresAt).getTime() <= Date.now()
   ) {
     if (conversion.status !== 'expired') {
+      const [{ eq }, { db }, { conversions }] = await Promise.all([
+        import('drizzle-orm'),
+        import('~/lib/db'),
+        import('~/lib/db/schema'),
+      ])
+
       await db
         .update(conversions)
         .set({ status: 'expired' })

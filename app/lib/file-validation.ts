@@ -1,4 +1,3 @@
-import path from 'node:path'
 import { fileTypeFromBuffer } from 'file-type'
 import { getConversionBySlug } from '~/lib/conversions'
 
@@ -55,6 +54,15 @@ function getDataView(buffer: Buffer | Uint8Array): DataView {
 
 function decodeText(buffer: Buffer | Uint8Array): string {
   return new TextDecoder('utf-8', { fatal: true }).decode(buffer)
+}
+
+function getFileExtension(filename: string): string {
+  const lastDotIndex = filename.lastIndexOf('.')
+  if (lastDotIndex <= 0 || lastDotIndex === filename.length - 1) {
+    return ''
+  }
+
+  return filename.slice(lastDotIndex).toLowerCase()
 }
 
 function parseZipEntries(buffer: Buffer | Uint8Array): ZipEntry[] | undefined {
@@ -177,7 +185,7 @@ export async function validateFile(
     return { valid: false, error: 'File exceeds the 10MB size limit.' }
   }
 
-  const ext = path.extname(declaredFilename).toLowerCase()
+  const ext = getFileExtension(declaredFilename)
   if (!conversion.sourceExtensions.includes(ext)) {
     return { valid: false, error: `Invalid file extension "${ext}". Expected: ${conversion.sourceExtensions.join(', ')}` }
   }

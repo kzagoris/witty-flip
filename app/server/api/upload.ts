@@ -1,22 +1,104 @@
-import path from 'node:path'
-import fs from 'node:fs/promises'
-import { randomUUID } from 'node:crypto'
-import { createServerFn } from '@tanstack/react-start'
-import { setResponseStatus } from '@tanstack/react-start/server'
-import { db } from '~/lib/db'
-import { conversions } from '~/lib/db/schema'
-import { getStoredInputFilename, ensureConversionsDir } from '~/lib/conversion-files'
-import { getConversionBySlug } from '~/lib/conversions'
-import { MAX_FILE_SIZE, validateFile } from '~/lib/file-validation'
-import { checkAndConsumeRequestRateLimit } from '~/lib/request-rate-limit'
-import { resolveClientIp, resolveClientIpFromRequest } from '~/lib/request-ip'
-import { initializeServerRuntime } from '~/lib/server-runtime'
+import { createServerFn, createServerOnlyFn } from '@tanstack/react-start'
 import { errorResult, type ApiErrorResponse, type ApiResult, type UploadResponse } from './contracts'
+
+interface UploadServerDeps {
+  pathModule: typeof import('node:path')
+  fsModule: typeof import('node:fs/promises')
+  randomUUID: typeof import('node:crypto').randomUUID
+  db: typeof import('~/lib/db').db
+  conversions: typeof import('~/lib/db/schema').conversions
+  getStoredInputFilename: typeof import('~/lib/conversion-files').getStoredInputFilename
+  ensureConversionsDir: typeof import('~/lib/conversion-files').ensureConversionsDir
+  getConversionBySlug: typeof import('~/lib/conversions').getConversionBySlug
+  MAX_FILE_SIZE: typeof import('~/lib/file-validation').MAX_FILE_SIZE
+  validateFile: typeof import('~/lib/file-validation').validateFile
+  checkAndConsumeRequestRateLimit: typeof import('~/lib/request-rate-limit').checkAndConsumeRequestRateLimit
+  initializeServerRuntime: typeof import('~/lib/server-runtime').initializeServerRuntime
+}
+
+let uploadServerDepsPromise: Promise<UploadServerDeps> | undefined
+
+const getUploadServerDeps = createServerOnlyFn(async (): Promise<UploadServerDeps> => {
+  uploadServerDepsPromise ??= Promise.all([
+    import('node:path'),
+    import('node:fs/promises'),
+    import('node:crypto'),
+    import('~/lib/db'),
+    import('~/lib/db/schema'),
+    import('~/lib/conversion-files'),
+    import('~/lib/conversions'),
+    import('~/lib/file-validation'),
+    import('~/lib/request-rate-limit'),
+    import('~/lib/server-runtime'),
+  ]).then(([
+    pathModule,
+    fsModule,
+    cryptoModule,
+    dbModule,
+    schemaModule,
+    conversionFilesModule,
+    conversionsModule,
+    fileValidationModule,
+    requestRateLimitModule,
+    serverRuntimeModule,
+  ]) => ({
+    pathModule,
+    fsModule,
+    randomUUID: cryptoModule.randomUUID,
+    db: dbModule.db,
+    conversions: schemaModule.conversions,
+    getStoredInputFilename: conversionFilesModule.getStoredInputFilename,
+    ensureConversionsDir: conversionFilesModule.ensureConversionsDir,
+    getConversionBySlug: conversionsModule.getConversionBySlug,
+    MAX_FILE_SIZE: fileValidationModule.MAX_FILE_SIZE,
+    validateFile: fileValidationModule.validateFile,
+    checkAndConsumeRequestRateLimit: requestRateLimitModule.checkAndConsumeRequestRateLimit,
+    initializeServerRuntime: serverRuntimeModule.initializeServerRuntime,
+  }))
+
+  return uploadServerDepsPromise
+})
+
+interface UploadRequestContextDeps {
+  setResponseStatus: typeof import('@tanstack/react-start/server').setResponseStatus
+  resolveClientIp: typeof import('~/lib/request-ip').resolveClientIp
+  resolveClientIpFromRequest: typeof import('~/lib/request-ip').resolveClientIpFromRequest
+}
+
+let uploadRequestContextPromise: Promise<UploadRequestContextDeps> | undefined
+
+const getUploadRequestContext = createServerOnlyFn(async (): Promise<UploadRequestContextDeps> => {
+  uploadRequestContextPromise ??= Promise.all([
+    import('@tanstack/react-start/server'),
+    import('~/lib/request-ip'),
+  ]).then(([serverModule, requestIpModule]) => ({
+    setResponseStatus: serverModule.setResponseStatus,
+    resolveClientIp: requestIpModule.resolveClientIp,
+    resolveClientIpFromRequest: requestIpModule.resolveClientIpFromRequest,
+  }))
+
+  return uploadRequestContextPromise
+})
 
 export async function processUpload(
   data: unknown,
   clientIp: string,
 ): Promise<ApiResult<UploadResponse | ApiErrorResponse>> {
+  const {
+    pathModule,
+    fsModule,
+    randomUUID,
+    db,
+    conversions,
+    getStoredInputFilename,
+    ensureConversionsDir,
+    getConversionBySlug,
+    MAX_FILE_SIZE,
+    validateFile,
+    checkAndConsumeRequestRateLimit,
+    initializeServerRuntime,
+  } = await getUploadServerDeps()
+
   initializeServerRuntime()
 
   const requestLimit = checkAndConsumeRequestRateLimit(clientIp)
@@ -59,13 +141,13 @@ export async function processUpload(
   }
 
   const fileId = randomUUID()
-  const extension = path.extname(file.name).toLowerCase()
+  const extension = pathModule.extname(file.name).toLowerCase()
   const storedFilename = getStoredInputFilename(fileId, extension)
-  const storedPath = path.join('data', 'conversions', storedFilename)
+  const storedPath = pathModule.join('data', 'conversions', storedFilename)
 
   try {
     await ensureConversionsDir()
-    await fs.writeFile(path.resolve(storedPath), buffer)
+    await fsModule.writeFile(pathModule.resolve(storedPath), buffer)
   } catch {
     return errorResult(500, 'upload_write_failed', 'Unable to store the uploaded file right now.')
   }
@@ -83,7 +165,7 @@ export async function processUpload(
       status: 'uploaded',
     })
   } catch {
-    await fs.rm(path.resolve(storedPath), { force: true }).catch(() => {})
+    await fsModule.rm(pathModule.resolve(storedPath), { force: true }).catch(() => {})
     return errorResult(500, 'upload_record_failed', 'Unable to save the upload metadata right now.')
   }
 
@@ -100,6 +182,8 @@ export async function handleUploadHttpRequest(
   request: Request,
   peerIp?: string,
 ): Promise<Response> {
+  const { resolveClientIpFromRequest } = await getUploadRequestContext()
+
   const result = await processUpload(
     await request.formData(),
     resolveClientIpFromRequest(request, peerIp),
@@ -108,6 +192,8 @@ export async function handleUploadHttpRequest(
 }
 
 export const uploadFile = createServerFn({ method: 'POST' }).handler(async ({ data }) => {
+  const { setResponseStatus, resolveClientIp } = await getUploadRequestContext()
+
   const result = await processUpload(data, resolveClientIp())
   setResponseStatus(result.status)
   return result.body

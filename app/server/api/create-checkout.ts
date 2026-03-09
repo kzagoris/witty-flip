@@ -1,12 +1,4 @@
-import { eq } from 'drizzle-orm'
-import { createServerFn } from '@tanstack/react-start'
-import { setResponseStatus } from '@tanstack/react-start/server'
-import { db } from '~/lib/db'
-import { conversions } from '~/lib/db/schema'
-import { checkAndConsumeRequestRateLimit } from '~/lib/request-rate-limit'
-import { resolveClientIp, resolveClientIpFromRequest } from '~/lib/request-ip'
-import { initializeServerRuntime } from '~/lib/server-runtime'
-import { createCheckoutSession } from '~/lib/stripe'
+import { createServerFn, createServerOnlyFn } from '@tanstack/react-start'
 import {
   errorResult,
   isRecord,
@@ -15,6 +7,65 @@ import {
   type ApiResult,
   type CheckoutResponse,
 } from './contracts'
+
+interface CreateCheckoutServerDeps {
+  eq: typeof import('drizzle-orm').eq
+  db: typeof import('~/lib/db').db
+  conversions: typeof import('~/lib/db/schema').conversions
+  checkAndConsumeRequestRateLimit: typeof import('~/lib/request-rate-limit').checkAndConsumeRequestRateLimit
+  initializeServerRuntime: typeof import('~/lib/server-runtime').initializeServerRuntime
+  createCheckoutSession: typeof import('~/lib/stripe').createCheckoutSession
+}
+
+let createCheckoutServerDepsPromise: Promise<CreateCheckoutServerDeps> | undefined
+
+const getCreateCheckoutServerDeps = createServerOnlyFn(async (): Promise<CreateCheckoutServerDeps> => {
+  createCheckoutServerDepsPromise ??= Promise.all([
+    import('drizzle-orm'),
+    import('~/lib/db'),
+    import('~/lib/db/schema'),
+    import('~/lib/request-rate-limit'),
+    import('~/lib/server-runtime'),
+    import('~/lib/stripe'),
+  ]).then(([
+    drizzleOrmModule,
+    dbModule,
+    schemaModule,
+    requestRateLimitModule,
+    serverRuntimeModule,
+    stripeModule,
+  ]) => ({
+    eq: drizzleOrmModule.eq,
+    db: dbModule.db,
+    conversions: schemaModule.conversions,
+    checkAndConsumeRequestRateLimit: requestRateLimitModule.checkAndConsumeRequestRateLimit,
+    initializeServerRuntime: serverRuntimeModule.initializeServerRuntime,
+    createCheckoutSession: stripeModule.createCheckoutSession,
+  }))
+
+  return createCheckoutServerDepsPromise
+})
+
+interface CreateCheckoutRequestContextDeps {
+  setResponseStatus: typeof import('@tanstack/react-start/server').setResponseStatus
+  resolveClientIp: typeof import('~/lib/request-ip').resolveClientIp
+  resolveClientIpFromRequest: typeof import('~/lib/request-ip').resolveClientIpFromRequest
+}
+
+let createCheckoutRequestContextPromise: Promise<CreateCheckoutRequestContextDeps> | undefined
+
+const getCreateCheckoutRequestContext = createServerOnlyFn(async (): Promise<CreateCheckoutRequestContextDeps> => {
+  createCheckoutRequestContextPromise ??= Promise.all([
+    import('@tanstack/react-start/server'),
+    import('~/lib/request-ip'),
+  ]).then(([serverModule, requestIpModule]) => ({
+    setResponseStatus: serverModule.setResponseStatus,
+    resolveClientIp: requestIpModule.resolveClientIp,
+    resolveClientIpFromRequest: requestIpModule.resolveClientIpFromRequest,
+  }))
+
+  return createCheckoutRequestContextPromise
+})
 
 function parseFileIdInput(data: unknown): string | undefined {
   if (!isRecord(data) || typeof data['fileId'] !== 'string') {
@@ -45,6 +96,15 @@ export async function processCreateCheckout(
   data: unknown,
   clientIp: string,
 ): Promise<ApiResult<CheckoutResponse | ApiErrorResponse>> {
+  const {
+    eq,
+    db,
+    conversions,
+    checkAndConsumeRequestRateLimit,
+    initializeServerRuntime,
+    createCheckoutSession,
+  } = await getCreateCheckoutServerDeps()
+
   initializeServerRuntime()
 
   const requestLimit = checkAndConsumeRequestRateLimit(clientIp)
@@ -107,6 +167,8 @@ export async function handleCreateCheckoutHttpRequest(
   request: Request,
   peerIp?: string,
 ): Promise<Response> {
+  const { resolveClientIpFromRequest } = await getCreateCheckoutRequestContext()
+
   const result = await processCreateCheckout(
     await request.json(),
     resolveClientIpFromRequest(request, peerIp),
@@ -115,6 +177,8 @@ export async function handleCreateCheckoutHttpRequest(
 }
 
 export const createCheckout = createServerFn({ method: 'POST' }).handler(async ({ data }) => {
+  const { setResponseStatus, resolveClientIp } = await getCreateCheckoutRequestContext()
+
   const result = await processCreateCheckout(data, resolveClientIp())
   setResponseStatus(result.status)
   return result.body

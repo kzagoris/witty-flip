@@ -1,8 +1,28 @@
 import type Stripe from 'stripe'
 import { createFileRoute } from '@tanstack/react-router'
-import { initializeServerRuntime } from '~/lib/server-runtime'
-import { handleCheckoutCompleted, verifyWebhookSignature } from '~/lib/stripe'
+import { createServerOnlyFn } from '@tanstack/react-start'
 import { errorResult } from '~/server/api/contracts'
+
+interface StripeWebhookServerDeps {
+  initializeServerRuntime: typeof import('~/lib/server-runtime').initializeServerRuntime
+  handleCheckoutCompleted: typeof import('~/lib/stripe').handleCheckoutCompleted
+  verifyWebhookSignature: typeof import('~/lib/stripe').verifyWebhookSignature
+}
+
+let stripeWebhookServerDepsPromise: Promise<StripeWebhookServerDeps> | undefined
+
+const getStripeWebhookServerDeps = createServerOnlyFn(async (): Promise<StripeWebhookServerDeps> => {
+  stripeWebhookServerDepsPromise ??= Promise.all([
+    import('~/lib/server-runtime'),
+    import('~/lib/stripe'),
+  ]).then(([serverRuntimeModule, stripeModule]) => ({
+    initializeServerRuntime: serverRuntimeModule.initializeServerRuntime,
+    handleCheckoutCompleted: stripeModule.handleCheckoutCompleted,
+    verifyWebhookSignature: stripeModule.verifyWebhookSignature,
+  }))
+
+  return stripeWebhookServerDepsPromise
+})
 
 function isUnrecoverableWebhookError(error: unknown): boolean {
   if (!(error instanceof Error)) return false
@@ -17,6 +37,12 @@ function isConfigurationError(error: unknown): boolean {
 }
 
 export async function handleStripeWebhookRequest(request: Request): Promise<Response> {
+  const {
+    initializeServerRuntime,
+    handleCheckoutCompleted,
+    verifyWebhookSignature,
+  } = await getStripeWebhookServerDeps()
+
   initializeServerRuntime()
 
   const signature = request.headers.get('stripe-signature')

@@ -1,4 +1,5 @@
 export const REQUESTS_PER_MINUTE_LIMIT = 10
+export const STATUS_REQUESTS_PER_MINUTE_LIMIT = 20
 const WINDOW_MS = 60_000
 
 export interface RequestRateLimitResult {
@@ -6,6 +7,11 @@ export interface RequestRateLimitResult {
   limit: number
   remaining: number
   resetAt: string
+}
+
+interface RequestRateLimitOptions {
+  limit?: number
+  bucketKey?: string
 }
 
 const requestBuckets = new Map<string, number[]>()
@@ -17,25 +23,28 @@ function trimWindow(timestamps: number[], now: number): number[] {
 export function checkAndConsumeRequestRateLimit(
   ip: string,
   now = Date.now(),
+  options: RequestRateLimitOptions = {},
 ): RequestRateLimitResult {
-  const bucket = trimWindow(requestBuckets.get(ip) ?? [], now)
+  const limit = options.limit ?? REQUESTS_PER_MINUTE_LIMIT
+  const bucketId = `${options.bucketKey ?? 'default'}:${ip}`
+  const bucket = trimWindow(requestBuckets.get(bucketId) ?? [], now)
 
-  if (bucket.length >= REQUESTS_PER_MINUTE_LIMIT) {
+  if (bucket.length >= limit) {
     return {
       allowed: false,
-      limit: REQUESTS_PER_MINUTE_LIMIT,
+      limit,
       remaining: 0,
       resetAt: new Date(bucket[0] + WINDOW_MS).toISOString(),
     }
   }
 
   bucket.push(now)
-  requestBuckets.set(ip, bucket)
+  requestBuckets.set(bucketId, bucket)
 
   return {
     allowed: true,
-    limit: REQUESTS_PER_MINUTE_LIMIT,
-    remaining: REQUESTS_PER_MINUTE_LIMIT - bucket.length,
+    limit,
+    remaining: limit - bucket.length,
     resetAt: new Date(bucket[0] + WINDOW_MS).toISOString(),
   }
 }
