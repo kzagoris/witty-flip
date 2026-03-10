@@ -16,6 +16,7 @@ interface ConversionStatusServerDeps {
     STATUS_REQUESTS_PER_MINUTE_LIMIT: typeof import("~/lib/request-rate-limit").STATUS_REQUESTS_PER_MINUTE_LIMIT
     initializeServerRuntime: typeof import("~/lib/server-runtime").initializeServerRuntime
     buildConversionStatusPayload: typeof import("./status-utils").buildConversionStatusPayload
+    reconcilePendingPayment: typeof import("~/lib/stripe").reconcilePendingPayment
 }
 
 let conversionStatusServerDepsPromise: Promise<ConversionStatusServerDeps> | undefined
@@ -28,6 +29,7 @@ const getConversionStatusServerDeps = createServerOnlyFn(async (): Promise<Conve
         import("~/lib/request-rate-limit"),
         import("~/lib/server-runtime"),
         import("./status-utils"),
+        import("~/lib/stripe"),
     ]).then(
         ([
             drizzleOrmModule,
@@ -36,6 +38,7 @@ const getConversionStatusServerDeps = createServerOnlyFn(async (): Promise<Conve
             requestRateLimitModule,
             serverRuntimeModule,
             statusUtilsModule,
+            stripeModule,
         ]) => ({
             eq: drizzleOrmModule.eq,
             db: dbModule.db,
@@ -44,6 +47,7 @@ const getConversionStatusServerDeps = createServerOnlyFn(async (): Promise<Conve
             STATUS_REQUESTS_PER_MINUTE_LIMIT: requestRateLimitModule.STATUS_REQUESTS_PER_MINUTE_LIMIT,
             initializeServerRuntime: serverRuntimeModule.initializeServerRuntime,
             buildConversionStatusPayload: statusUtilsModule.buildConversionStatusPayload,
+            reconcilePendingPayment: stripeModule.reconcilePendingPayment,
         }),
     )
 
@@ -92,6 +96,7 @@ export async function processConversionStatus(
         STATUS_REQUESTS_PER_MINUTE_LIMIT,
         initializeServerRuntime,
         buildConversionStatusPayload,
+        reconcilePendingPayment,
     } = await getConversionStatusServerDeps()
 
     initializeServerRuntime()
@@ -113,12 +118,23 @@ export async function processConversionStatus(
         return errorResult(400, "invalid_file_id", "A valid fileId is required.")
     }
 
-    const conversion = await db.query.conversions.findFirst({
+    let conversion = await db.query.conversions.findFirst({
         where: eq(conversions.id, fileId),
     })
 
     if (!conversion) {
         return errorResult(404, "not_found", "Conversion not found.", { fileId })
+    }
+
+    if (conversion.status === "pending_payment") {
+        await reconcilePendingPayment(fileId)
+        conversion = await db.query.conversions.findFirst({
+            where: eq(conversions.id, fileId),
+        })
+
+        if (!conversion) {
+            return errorResult(404, "not_found", "Conversion not found.", { fileId })
+        }
     }
 
     return {

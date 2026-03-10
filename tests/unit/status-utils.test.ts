@@ -31,6 +31,60 @@ beforeEach(async () => {
 })
 
 describe('buildConversionStatusPayload', () => {
+  it('surfaces a custom payment-required message when checkout recovery asks the user to retry payment', async () => {
+    const fileId = randomUUID()
+
+    await db.insert(schema.conversions).values({
+      id: fileId,
+      originalFilename: 'test.docx',
+      sourceFormat: 'docx',
+      targetFormat: 'md',
+      conversionType: 'docx-to-markdown',
+      ipAddress: '127.0.0.1',
+      inputFilePath: `${fileId}.docx`,
+      status: 'payment_required',
+      errorMessage: 'Your checkout session expired. Please try payment again.',
+    })
+
+    const conversion = await db.query.conversions.findFirst({
+      where: eq(schema.conversions.id, fileId),
+    })
+    if (!conversion) {
+      throw new Error('Expected seeded conversion row to exist.')
+    }
+
+    const payload = await buildConversionStatusPayload(conversion)
+    expect(payload.status).toBe('payment_required')
+    expect(payload.message).toBe('Your checkout session expired. Please try payment again.')
+  })
+
+  it('surfaces a custom pending-payment message when the backend is still reconciling payment state', async () => {
+    const fileId = randomUUID()
+
+    await db.insert(schema.conversions).values({
+      id: fileId,
+      originalFilename: 'test.docx',
+      sourceFormat: 'docx',
+      targetFormat: 'md',
+      conversionType: 'docx-to-markdown',
+      ipAddress: '127.0.0.1',
+      inputFilePath: `${fileId}.docx`,
+      status: 'pending_payment',
+      errorMessage: 'Waiting for payment confirmation...',
+    })
+
+    const conversion = await db.query.conversions.findFirst({
+      where: eq(schema.conversions.id, fileId),
+    })
+    if (!conversion) {
+      throw new Error('Expected seeded conversion row to exist.')
+    }
+
+    const payload = await buildConversionStatusPayload(conversion)
+    expect(payload.status).toBe('pending_payment')
+    expect(payload.message).toBe('Waiting for payment confirmation...')
+  })
+
   it('downgrades completed rows with missing output artifacts to failed and records the transition', async () => {
     const fileId = randomUUID()
     const outputFilePath = join(conversionsDir, `${fileId}-output.pdf`)

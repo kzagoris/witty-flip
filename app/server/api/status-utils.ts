@@ -125,7 +125,7 @@ export async function buildConversionStatusPayload(
             fileId: conversion.id,
             status: "pending_payment",
             progress: statusToProgress("pending_payment"),
-            message: "Processing payment...",
+            message: conversion.errorMessage ?? "Processing payment...",
         }
     }
 
@@ -134,7 +134,7 @@ export async function buildConversionStatusPayload(
             fileId: conversion.id,
             status: "payment_required",
             progress: statusToProgress("payment_required"),
-            message: "Free daily limit reached. Complete payment to continue.",
+            message: conversion.errorMessage ?? "Free daily limit reached. Complete payment to continue.",
         }
     }
 
