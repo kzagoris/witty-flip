@@ -1,3 +1,5 @@
+import '~/lib/load-env'
+
 export const isProduction = process.env.NODE_ENV === 'production'
 
 export function validateEnv(): void {

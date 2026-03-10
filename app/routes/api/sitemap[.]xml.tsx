@@ -1,4 +1,5 @@
 import { createFileRoute } from "@tanstack/react-router"
+import '~/lib/load-env'
 
 export async function handleSitemapRequest(): Promise<Response> {
     const { getAllConversionTypes } = await import("~/lib/conversions")

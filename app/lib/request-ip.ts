@@ -1,3 +1,4 @@
+import '~/lib/load-env'
 import { isIP } from 'node:net'
 import { getRequest, getRequestIP } from '@tanstack/react-start/server'
 

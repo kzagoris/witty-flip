@@ -134,6 +134,7 @@ describe('handleMetricsRequest', () => {
 
   it('returns 503 when METRICS_API_KEY not configured', async () => {
     delete process.env.METRICS_API_KEY
+    process.env.WITTYFLIP_DISABLE_ENV_FILE_LOAD = '1'
 
     vi.resetModules()
     const mod = await import('~/routes/api/metrics')

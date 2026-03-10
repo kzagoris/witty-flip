@@ -1,4 +1,5 @@
 import { createFileRoute } from "@tanstack/react-router"
+import '~/lib/load-env'
 import { resolveRequestId, withRequestIdHeader } from "~/lib/observability"
 
 interface AggregatedToolStats {

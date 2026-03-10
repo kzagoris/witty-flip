@@ -3,6 +3,26 @@ import { describe, expect, it, vi, beforeEach } from 'vitest'
 describe('validateEnv', () => {
   beforeEach(() => {
     vi.resetModules()
+    process.env.WITTYFLIP_DISABLE_ENV_FILE_LOAD = '1'
+  })
+
+  it('hydrates METRICS_API_KEY from the repo .env file when not already present', async () => {
+    delete process.env.METRICS_API_KEY
+    delete process.env.WITTYFLIP_DISABLE_ENV_FILE_LOAD
+    delete process.env.NODE_ENV
+    process.env.STRIPE_SECRET_KEY = 'sk_test_xxx'
+    process.env.STRIPE_WEBHOOK_SECRET = 'whsec_xxx'
+
+    const { _resetLoadedEnvFilesForTests, loadEnvFiles } = await import('~/lib/load-env')
+    _resetLoadedEnvFilesForTests()
+    loadEnvFiles({ force: true })
+
+    const { validateEnv } = await import('~/lib/env')
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    validateEnv()
+
+    expect(process.env.METRICS_API_KEY).toBe('uw7gug7no+jKXuWE06xQxjsnx4Hwl2qRkLmQSwLELt8=')
+    expect(warnSpy).not.toHaveBeenCalledWith(expect.stringContaining('METRICS_API_KEY'))
   })
 
   it('sets default DATABASE_URL when not provided', async () => {

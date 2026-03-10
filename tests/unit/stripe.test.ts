@@ -113,6 +113,7 @@ describe('stripe', () => {
     vi.resetModules()
 
     sandbox = createTestSandbox()
+    process.env.WITTYFLIP_DISABLE_ENV_FILE_LOAD = '1'
 
     // Default env config — individual tests can override before re-importing
     process.env.STRIPE_SECRET_KEY = 'sk_test_fake_key'

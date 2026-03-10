@@ -1,4 +1,5 @@
 import { createFileRoute } from "@tanstack/react-router"
+import '~/lib/load-env'
 import { PageShell } from "~/components/layout/PageShell"
 import { BlogPostCard } from "~/components/blog/BlogPostCard"
 import { callServerFn } from "~/lib/api-client"

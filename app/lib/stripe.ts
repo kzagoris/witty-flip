@@ -1,3 +1,4 @@
+import '~/lib/load-env'
 import Stripe from 'stripe'
 import { and, desc, eq } from 'drizzle-orm'
 import { db } from '~/lib/db'

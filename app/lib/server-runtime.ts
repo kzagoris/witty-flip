@@ -95,10 +95,10 @@ export function shutdownServerRuntime(): void {
     process.removeListener('SIGTERM', sigTermHandler)
     sigTermHandler = null
   }
+  initialized = false
   logger.info('Server runtime shut down')
 }
 
 export function _resetInitialized(): void {
-  initialized = false
-  cronTask = null
+  shutdownServerRuntime()
 }

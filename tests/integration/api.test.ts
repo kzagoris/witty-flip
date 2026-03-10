@@ -1,12 +1,22 @@
 import { rmSync, writeFileSync } from 'node:fs'
-import { eq } from 'drizzle-orm'
+import { and, eq } from 'drizzle-orm'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { createTestSandbox, setupTestDb } from '../helpers/test-env'
 import { createTestApp } from '../helpers/create-test-app'
 
+import type Stripe from 'stripe'
 import type { TestApp } from '../helpers/create-test-app'
 import type { TestSandbox } from '../helpers/test-env'
 import type { ConvertResult, Converter } from '~/lib/converters'
+
+const { mockStripeClient } = vi.hoisted(() => ({
+  mockStripeClient: {
+    checkout: { sessions: { create: vi.fn(), retrieve: vi.fn() } },
+    webhooks: { constructEvent: vi.fn() },
+  },
+}))
+
+vi.mock('stripe', () => ({ default: vi.fn(() => mockStripeClient) }))
 
 function expectRecord(value: unknown): Record<string, unknown> {
   if (typeof value !== 'object' || value === null) {
@@ -34,6 +44,28 @@ function getNumber(body: Record<string, unknown>, key: string): number {
   return value
 }
 
+function makeStripeSession(fileId: string, sessionId: string): Stripe.Checkout.Session {
+  return {
+    id: sessionId,
+    metadata: { fileId },
+    payment_intent: 'pi_test_paid',
+    amount_total: 49,
+    currency: 'usd',
+    payment_status: 'paid',
+    status: 'complete',
+  } as unknown as Stripe.Checkout.Session
+}
+
+function makeCheckoutCompletedEvent(fileId: string, sessionId: string): Stripe.Event {
+  return {
+    id: 'evt_test_paid',
+    type: 'checkout.session.completed',
+    data: {
+      object: makeStripeSession(fileId, sessionId),
+    },
+  } as unknown as Stripe.Event
+}
+
 describe('Phase 3 API integration', () => {
   let sandbox: TestSandbox
   let app: TestApp
@@ -43,6 +75,10 @@ describe('Phase 3 API integration', () => {
 
   beforeEach(async () => {
     vi.resetModules()
+    vi.clearAllMocks()
+    mockStripeClient.checkout.sessions.create.mockReset()
+    mockStripeClient.checkout.sessions.retrieve.mockReset()
+    mockStripeClient.webhooks.constructEvent.mockReset()
     process.env.STRIPE_SECRET_KEY = 'sk_test_fake_key'
     process.env.STRIPE_WEBHOOK_SECRET = 'whsec_test_secret'
     process.env.BASE_URL = 'http://localhost:3000'
@@ -62,6 +98,8 @@ describe('Phase 3 API integration', () => {
   })
 
   afterEach(async () => {
+    const { shutdownServerRuntime } = await import('~/lib/server-runtime')
+    shutdownServerRuntime()
     await app.close()
   })
 
@@ -82,17 +120,59 @@ describe('Phase 3 API integration', () => {
     throw new Error(`Timed out waiting for terminal status for ${fileId}`)
   }
 
+  async function waitForCondition(predicate: () => Promise<boolean>, failureMessage: string) {
+    const deadline = Date.now() + 4_000
+
+    while (Date.now() < deadline) {
+      if (await predicate()) {
+        return
+      }
+
+      await new Promise<void>(resolve => setTimeout(resolve, 25))
+    }
+
+    throw new Error(failureMessage)
+  }
+
+  async function countStatusChangeEvents(fileId: string, toStatus: string) {
+    const rows = await db
+      .select()
+      .from(schema.conversionEvents)
+      .where(and(
+        eq(schema.conversionEvents.fileId, fileId),
+        eq(schema.conversionEvents.eventType, 'conversion_status_changed'),
+        eq(schema.conversionEvents.toStatus, toStatus),
+      ))
+
+    return rows.length
+  }
+
+  async function countPaymentStatusEvents(fileId: string, paymentStatus: string) {
+    const rows = await db
+      .select()
+      .from(schema.conversionEvents)
+      .where(and(
+        eq(schema.conversionEvents.fileId, fileId),
+        eq(schema.conversionEvents.eventType, 'payment_status_changed'),
+        eq(schema.conversionEvents.paymentStatus, paymentStatus),
+      ))
+
+    return rows.length
+  }
+
   it('handles upload -> convert -> status -> download', async () => {
+    const convertSpy = vi.fn((_inputPath: string, outputPath: string) => {
+      writeFileSync(outputPath, 'PDF DATA')
+      return Promise.resolve({
+        success: true,
+        outputPath,
+        exitCode: 0,
+        durationMs: 12,
+      } satisfies ConvertResult)
+    })
+
     registerConverter('pandoc', {
-      convert: (_inputPath, outputPath) => {
-        writeFileSync(outputPath, 'PDF DATA')
-        return Promise.resolve({
-          success: true,
-          outputPath,
-          exitCode: 0,
-          durationMs: 12,
-        } satisfies ConvertResult)
-      },
+      convert: convertSpy,
     })
 
     const upload = await app.request
@@ -127,6 +207,7 @@ describe('Phase 3 API integration', () => {
     expect(Buffer.isBuffer(downloadBody)).toBe(true)
     const downloadBuffer = downloadBody as Buffer
     expect(downloadBuffer.toString('utf-8')).toBe('PDF DATA')
+    expect(convertSpy).toHaveBeenCalledOnce()
   })
 
   it('returns payment_required once the free quota is exhausted', async () => {
@@ -158,6 +239,294 @@ describe('Phase 3 API integration', () => {
       where: eq(schema.conversions.id, fileId),
     })
     expect(conversion?.status).toBe('payment_required')
+  })
+
+  it('handles paid conversion: upload -> 402 -> checkout -> webhook -> download', async () => {
+    const today = new Date().toISOString().slice(0, 10)
+    const convertSpy = vi.fn((_inputPath: string, outputPath: string) => {
+      writeFileSync(outputPath, 'PAID PDF DATA')
+      return Promise.resolve({
+        success: true,
+        outputPath,
+        exitCode: 0,
+        durationMs: 18,
+      } satisfies ConvertResult)
+    })
+
+    await db.insert(schema.rateLimits).values({
+      ipAddress: '127.0.0.1',
+      date: today,
+      freeConversionCount: 2,
+      reservedFreeSlots: 0,
+    })
+    registerConverter('pandoc', { convert: convertSpy })
+
+    const upload = await app.request
+      .post('/api/upload')
+      .field('conversionType', 'markdown-to-pdf')
+      .attach('file', Buffer.from('# Paid Hello\n'), 'paid.md')
+    const uploadBody = expectRecord(upload.body as unknown)
+    const fileId = getString(uploadBody, 'fileId')
+
+    const convert = await app.request.post('/api/convert').send({ fileId })
+    const convertBody = expectRecord(convert.body as unknown)
+
+    expect(convert.status).toBe(402)
+    expect(getString(convertBody, 'error')).toBe('payment_required')
+    expect(getString(convertBody, 'status')).toBe('payment_required')
+
+    const sessionId = 'cs_test_paid_flow'
+    mockStripeClient.checkout.sessions.create.mockResolvedValue({
+      id: sessionId,
+      url: 'https://checkout.stripe.com/pay/cs_test_paid_flow',
+      expires_at: Math.floor(Date.now() / 1000) + 30 * 60,
+    })
+
+    const checkout = await app.request.post('/api/create-checkout').send({ fileId })
+    const checkoutBody = expectRecord(checkout.body as unknown)
+
+    expect(checkout.status).toBe(200)
+    expect(getString(checkoutBody, 'fileId')).toBe(fileId)
+    expect(getString(checkoutBody, 'sessionId')).toBe(sessionId)
+    expect(getString(checkoutBody, 'checkoutUrl')).toContain('checkout.stripe.com')
+
+    mockStripeClient.webhooks.constructEvent.mockReturnValue(makeCheckoutCompletedEvent(fileId, sessionId))
+
+    const webhook = await app.request
+      .post('/api/webhook/stripe')
+      .set('stripe-signature', 'sig_test_paid_flow')
+      .set('content-type', 'application/json')
+      .send('{"id":"evt_test_paid","type":"checkout.session.completed"}')
+
+    expect(webhook.status).toBe(200)
+    expect(mockStripeClient.checkout.sessions.retrieve).not.toHaveBeenCalled()
+
+    const completed = await waitForTerminalStatus(fileId)
+    const completedBody = expectRecord(completed.body as unknown)
+    expect(getString(completedBody, 'status')).toBe('completed')
+
+    const download = await app.request.get(`/api/download/${fileId}`)
+    expect(download.status).toBe(200)
+    expect((download.body as Buffer).toString('utf-8')).toBe('PAID PDF DATA')
+
+    const conversion = await db.query.conversions.findFirst({
+      where: eq(schema.conversions.id, fileId),
+    })
+    const payments = await db.select().from(schema.payments).where(eq(schema.payments.fileId, fileId))
+    const rateLimit = await db.query.rateLimits.findFirst({
+      where: and(eq(schema.rateLimits.ipAddress, '127.0.0.1'), eq(schema.rateLimits.date, today)),
+    })
+
+    expect(convertSpy).toHaveBeenCalledOnce()
+    expect(conversion?.wasPaid).toBe(1)
+    expect(conversion?.status).toBe('completed')
+    expect(payments).toHaveLength(1)
+    expect(payments[0]?.status).toBe('completed')
+    expect(rateLimit?.freeConversionCount).toBe(2)
+    expect(rateLimit?.reservedFreeSlots).toBe(0)
+  })
+
+  it('handles duplicate checkout.session.completed webhooks without re-enqueueing', async () => {
+    const today = new Date().toISOString().slice(0, 10)
+    const convertSpy = vi.fn((_inputPath: string, outputPath: string) => {
+      writeFileSync(outputPath, 'DUPLICATE WEBHOOK PDF DATA')
+      return Promise.resolve({
+        success: true,
+        outputPath,
+        exitCode: 0,
+        durationMs: 21,
+      } satisfies ConvertResult)
+    })
+
+    await db.insert(schema.rateLimits).values({
+      ipAddress: '127.0.0.1',
+      date: today,
+      freeConversionCount: 2,
+      reservedFreeSlots: 0,
+    })
+    registerConverter('pandoc', { convert: convertSpy })
+
+    const upload = await app.request
+      .post('/api/upload')
+      .field('conversionType', 'markdown-to-pdf')
+      .attach('file', Buffer.from('# Duplicate webhook\n'), 'duplicate.md')
+    const uploadBody = expectRecord(upload.body as unknown)
+    const fileId = getString(uploadBody, 'fileId')
+
+    const convert = await app.request.post('/api/convert').send({ fileId })
+    expect(convert.status).toBe(402)
+
+    const sessionId = 'cs_test_duplicate_webhook'
+    mockStripeClient.checkout.sessions.create.mockResolvedValue({
+      id: sessionId,
+      url: 'https://checkout.stripe.com/pay/cs_test_duplicate_webhook',
+      expires_at: Math.floor(Date.now() / 1000) + 30 * 60,
+    })
+
+    const checkout = await app.request.post('/api/create-checkout').send({ fileId })
+    expect(checkout.status).toBe(200)
+
+    mockStripeClient.webhooks.constructEvent.mockReturnValue(makeCheckoutCompletedEvent(fileId, sessionId))
+
+    const rawBody = '{"id":"evt_test_duplicate","type":"checkout.session.completed"}'
+    const firstWebhook = await app.request
+      .post('/api/webhook/stripe')
+      .set('stripe-signature', 'sig_duplicate_webhook')
+      .set('content-type', 'application/json')
+      .send(rawBody)
+    expect(firstWebhook.status).toBe(200)
+
+    await waitForTerminalStatus(fileId)
+
+    const duplicateWebhook = await app.request
+      .post('/api/webhook/stripe')
+      .set('stripe-signature', 'sig_duplicate_webhook')
+      .set('content-type', 'application/json')
+      .send(rawBody)
+    expect(duplicateWebhook.status).toBe(200)
+
+    const payments = await db.select().from(schema.payments).where(eq(schema.payments.fileId, fileId))
+    const conversion = await db.query.conversions.findFirst({
+      where: eq(schema.conversions.id, fileId),
+    })
+
+    expect(convertSpy).toHaveBeenCalledOnce()
+    expect(payments).toHaveLength(1)
+    expect(conversion?.status).toBe('completed')
+    expect(await countPaymentStatusEvents(fileId, 'completed')).toBe(1)
+  })
+
+  it('returns current status without re-enqueueing when convert is retried after state changes', async () => {
+    const successSpy = vi.fn((_inputPath: string, outputPath: string) => {
+      writeFileSync(outputPath, 'RETRY PDF DATA')
+      return Promise.resolve({
+        success: true,
+        outputPath,
+        exitCode: 0,
+        durationMs: 10,
+      } satisfies ConvertResult)
+    })
+    registerConverter('pandoc', { convert: successSpy })
+
+    const firstUpload = await app.request
+      .post('/api/upload')
+      .field('conversionType', 'markdown-to-pdf')
+      .attach('file', Buffer.from('# Retry success\n'), 'retry-success.md')
+    const firstUploadBody = expectRecord(firstUpload.body as unknown)
+    const completedFileId = getString(firstUploadBody, 'fileId')
+
+    const firstConvert = await app.request.post('/api/convert').send({ fileId: completedFileId })
+    expect(firstConvert.status).toBe(200)
+    await waitForTerminalStatus(completedFileId)
+
+    const completedRetry = await app.request.post('/api/convert').send({ fileId: completedFileId })
+    const completedRetryBody = expectRecord(completedRetry.body as unknown)
+
+    expect(completedRetry.status).toBe(200)
+    expect(getString(completedRetryBody, 'status')).toBe('completed')
+    expect(successSpy).toHaveBeenCalledOnce()
+
+    const today = new Date().toISOString().slice(0, 10)
+    await db
+      .update(schema.rateLimits)
+      .set({
+        freeConversionCount: 2,
+        reservedFreeSlots: 0,
+      })
+      .where(and(eq(schema.rateLimits.ipAddress, '127.0.0.1'), eq(schema.rateLimits.date, today)))
+
+    const secondUpload = await app.request
+      .post('/api/upload')
+      .field('conversionType', 'markdown-to-pdf')
+      .attach('file', Buffer.from('# Retry payment required\n'), 'retry-payment.md')
+    const secondUploadBody = expectRecord(secondUpload.body as unknown)
+    const paymentRequiredFileId = getString(secondUploadBody, 'fileId')
+
+    const paymentRequired = await app.request.post('/api/convert').send({ fileId: paymentRequiredFileId })
+    const paymentRequiredBody = expectRecord(paymentRequired.body as unknown)
+    expect(paymentRequired.status).toBe(402)
+    expect(getString(paymentRequiredBody, 'error')).toBe('payment_required')
+    expect(getString(paymentRequiredBody, 'status')).toBe('payment_required')
+
+    const paymentRequiredRetry = await app.request.post('/api/convert').send({ fileId: paymentRequiredFileId })
+    const paymentRequiredRetryBody = expectRecord(paymentRequiredRetry.body as unknown)
+
+    expect(paymentRequiredRetry.status).toBe(402)
+    expect(getString(paymentRequiredRetryBody, 'error')).toBe('payment_required')
+    expect(getString(paymentRequiredRetryBody, 'status')).toBe('payment_required')
+    expect(successSpy).toHaveBeenCalledOnce()
+    expect(await countStatusChangeEvents(paymentRequiredFileId, 'payment_required')).toBe(1)
+  })
+
+  it('limits concurrent conversions to 5 when submitting 6 jobs through the API', async () => {
+    const resolvers: Array<(result: ConvertResult) => void> = []
+    const convertSpy = vi.fn((_inputPath: string, _outputPath: string, _signal: AbortSignal) =>
+      new Promise<ConvertResult>(resolve => {
+        resolvers.push(resolve)
+      }))
+
+    registerConverter('pandoc', { convert: convertSpy })
+
+    const fileIds: string[] = []
+
+    for (let index = 0; index < 6; index += 1) {
+      const peerIp = `203.0.113.${10 + index}`
+      const upload = await app.request
+        .post('/api/upload')
+        .set('x-test-peer-ip', peerIp)
+        .field('conversionType', 'markdown-to-pdf')
+        .attach('file', Buffer.from(`# Concurrent ${index}\n`), `concurrent-${index}.md`)
+      const uploadBody = expectRecord(upload.body as unknown)
+      const fileId = getString(uploadBody, 'fileId')
+      fileIds.push(fileId)
+
+      const convert = await app.request
+        .post('/api/convert')
+        .set('x-test-peer-ip', peerIp)
+        .send({ fileId })
+      const convertBody = expectRecord(convert.body as unknown)
+
+      expect(convert.status).toBe(200)
+      expect(getString(convertBody, 'status')).toBe('queued')
+    }
+
+    await waitForCondition(async () => {
+      const rows = await db.select().from(schema.conversions)
+      const convertingCount = rows.filter(row => row.status === 'converting').length
+      const queuedCount = rows.filter(row => row.status === 'queued').length
+      return convertSpy.mock.calls.length === 5 && convertingCount === 5 && queuedCount === 1
+    }, 'Timed out waiting for the first 5 conversions to start')
+
+    resolvers.shift()?.({
+      success: false,
+      outputPath: '',
+      exitCode: 1,
+      errorMessage: 'intentional concurrency release',
+      durationMs: 1,
+    })
+
+    await waitForCondition(async () => {
+      const rows = await db.select().from(schema.conversions)
+      const convertingCount = rows.filter(row => row.status === 'converting').length
+      const queuedCount = rows.filter(row => row.status === 'queued').length
+      const failedCount = rows.filter(row => row.status === 'failed').length
+      return convertSpy.mock.calls.length === 6 && convertingCount === 5 && queuedCount === 0 && failedCount === 1
+    }, 'Timed out waiting for the queued conversion to start after a slot opened')
+
+    for (const resolve of resolvers.splice(0)) {
+      resolve({
+        success: false,
+        outputPath: '',
+        exitCode: 1,
+        errorMessage: 'intentional concurrency cleanup',
+        durationMs: 1,
+      })
+    }
+
+    await waitForCondition(async () => {
+      const rows = await db.select().from(schema.conversions)
+      return rows.length === fileIds.length && rows.every(row => row.status === 'failed')
+    }, 'Timed out waiting for all concurrent conversions to reach terminal status')
   })
 
   it('resolves trusted proxy headers consistently', async () => {

@@ -20,6 +20,8 @@ scp bin/Release/net9.0/linux-x64/publish/alert-check user@vps:/opt/wittyflip/
 
 ## Environment Variables
 
+The tool now attempts to hydrate missing environment variables from the nearest `.env.local` and `.env` files it can find while walking upward from the current working directory and the executable directory. Existing shell environment variables still win.
+
 | Variable | Required | Description |
 |---|---|---|
 | `HEALTH_URL` | No | Health endpoint URL (default: `http://localhost:3000/api/health/ready`) |

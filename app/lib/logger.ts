@@ -1,3 +1,4 @@
+import '~/lib/load-env'
 import pino from 'pino'
 import { isProduction } from '~/lib/env'
 

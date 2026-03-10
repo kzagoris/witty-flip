@@ -1,4 +1,5 @@
 import { createFileRoute, notFound } from "@tanstack/react-router"
+import '~/lib/load-env'
 import { PageShell } from "~/components/layout/PageShell"
 import { BlogPostHeader } from "~/components/blog/BlogPostHeader"
 import { BlogCTABanner } from "~/components/blog/BlogCTABanner"

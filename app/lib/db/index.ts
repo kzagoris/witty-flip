@@ -1,3 +1,4 @@
+import '~/lib/load-env'
 import { drizzle } from 'drizzle-orm/libsql'
 import * as schema from './schema'
 

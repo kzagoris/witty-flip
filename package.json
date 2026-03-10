@@ -13,7 +13,7 @@
     "db:migrate": "drizzle-kit migrate",
     "test": "vitest run",
     "test:watch": "vitest",
-    "test:fixtures": "vitest run tests/fixtures --passWithNoTests",
+    "test:fixtures": "vitest run --config vitest.fixtures.config.ts --passWithNoTests",
     "test:tooling": "node scripts/run-tooling-smoke-tests.mjs"
   },
   "dependencies": {

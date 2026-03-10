@@ -50,6 +50,15 @@ describe('weasyprint converter', () => {
     expect(args[baseUrlIdx + 1]).toBe('/dev/null')
   })
 
+  it('does not pass allow or enable flags that would weaken hardening assumptions', async () => {
+    spawnWithSignal.mockResolvedValue({ exitCode: 0, stdout: '', stderr: '' } satisfies SpawnResult)
+    await weasyprintConverter.convert(INPUT, OUTPUT, AbortSignal.timeout(5_000))
+    const args = spawnWithSignal.mock.calls[0][1] as string[]
+
+    expect(args.some(arg => arg.startsWith('--allow-'))).toBe(false)
+    expect(args.some(arg => arg.startsWith('--enable-'))).toBe(false)
+  })
+
   it('returns success on exit code 0', async () => {
     spawnWithSignal.mockResolvedValue({ exitCode: 0, stdout: '', stderr: '' } satisfies SpawnResult)
     const result = await weasyprintConverter.convert(INPUT, OUTPUT, AbortSignal.timeout(5_000))
