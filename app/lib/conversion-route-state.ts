@@ -20,3 +20,9 @@ export function deriveConversionRouteState(search: ConversionRouteSearch): Deriv
         initialCanceled,
     }
 }
+
+export function shouldSyncConversionSearch(search: ConversionRouteSearch, fileId: string | null): boolean {
+    const nextFileId = fileId ?? undefined
+
+    return search.fileId !== nextFileId || search.session_id !== undefined || search.canceled !== undefined
+}

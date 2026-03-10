@@ -14,7 +14,7 @@ import { QuotaBadge } from "~/components/conversion/QuotaBadge"
 import { PaymentPrompt } from "~/components/conversion/PaymentPrompt"
 import { useConversionFlow } from "~/hooks/useConversionFlow"
 import { getConversionBySlug } from "~/lib/conversions"
-import { deriveConversionRouteState } from "~/lib/conversion-route-state"
+import { deriveConversionRouteState, shouldSyncConversionSearch } from "~/lib/conversion-route-state"
 import { getRateLimitStatus } from "~/server/api/rate-limit-status"
 import { callServerFn } from "~/lib/api-client"
 import type { RateLimitStatusResponse } from "~/server/api/contracts"
@@ -29,6 +29,8 @@ const searchSchema = z.object({
 
 export const Route = createFileRoute("/$conversionType")({
     validateSearch: (search) => searchSchema.parse(search),
+    staleTime: 60_000,
+    shouldReload: false,
     loader: async ({ params }) => {
         const conversion = getConversionBySlug(params.conversionType)
         // eslint-disable-next-line @typescript-eslint/only-throw-error
@@ -80,11 +82,16 @@ export const Route = createFileRoute("/$conversionType")({
 
 function ConversionPage() {
     const { conversion, initialQuota } = Route.useLoaderData()
-    const { fileId: searchFileId, session_id, canceled } = Route.useSearch()
+    const search = Route.useSearch()
+    const { fileId: searchFileId, session_id, canceled } = search
     const navigate = useNavigate({ from: "/$conversionType" })
 
     const syncFileIdInSearch = useCallback(
         (fileId: string | null) => {
+            if (!shouldSyncConversionSearch(search, fileId)) {
+                return
+            }
+
             void navigate({
                 to: "/$conversionType",
                 params: { conversionType: conversion.slug },
@@ -98,7 +105,7 @@ function ConversionPage() {
                 resetScroll: false,
             })
         },
-        [conversion.slug, navigate],
+        [conversion.slug, navigate, search],
     )
 
     const handleExpired = useCallback(() => {

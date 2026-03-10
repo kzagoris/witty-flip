@@ -286,6 +286,28 @@ describe('Phase 3 API integration', () => {
     expect(getString(limitedBody, 'error')).toBe('request_rate_limited')
   })
 
+  it('checks rate-limit status independently from convert request throttling', async () => {
+    const upload = await app.request
+      .post('/api/upload')
+      .field('conversionType', 'markdown-to-pdf')
+      .attach('file', Buffer.from('# Hello\n'), 'hello.md')
+    const uploadBody = expectRecord(upload.body as unknown)
+    const fileId = getString(uploadBody, 'fileId')
+
+    for (let index = 0; index < 10; index += 1) {
+      const response = await app.request.get('/api/rate-limit-status')
+      expect(response.status).toBe(200)
+    }
+
+    const convert = await app.request
+      .post('/api/convert')
+      .send({ fileId })
+    const convertBody = expectRecord(convert.body as unknown)
+
+    expect(convert.status).toBe(200)
+    expect(getString(convertBody, 'status')).toBe('queued')
+  })
+
   it('exposes a health endpoint', async () => {
     const response = await app.request.get('/api/health')
     expect(response.status).toBe(200)

@@ -52,7 +52,9 @@ export async function processRateLimitStatus(
 
     initializeServerRuntime()
 
-    const requestLimit = checkAndConsumeRequestRateLimit(clientIp)
+    const requestLimit = checkAndConsumeRequestRateLimit(clientIp, Date.now(), {
+        bucketKey: "quota",
+    })
     if (!requestLimit.allowed) {
         return errorResult(429, "request_rate_limited", "Too many requests. Please wait a minute and try again.", {
             limit: requestLimit.limit,
