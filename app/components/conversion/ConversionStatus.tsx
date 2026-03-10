@@ -5,6 +5,8 @@ import { DownloadSection } from './DownloadSection'
 import { ErrorCard } from './ErrorCard'
 import { PaymentPrompt } from './PaymentPrompt'
 
+const DEFAULT_PAYMENT_REQUIRED_MESSAGE = 'Free daily limit reached. Complete payment to continue.'
+
 interface ConversionStatusProps {
   status: ConversionStatusResponse
   targetFormat: string
@@ -28,7 +30,7 @@ export function ConversionStatus({ status, targetFormat, fileId, onReset, onExpi
       return (
         <ConversionProgress
           progress={statusToProgress('pending_payment')}
-          message="Processing payment..."
+          message={status.message ?? 'Processing payment...'}
         />
       )
 
@@ -52,7 +54,12 @@ export function ConversionStatus({ status, targetFormat, fileId, onReset, onExpi
       )
 
     case 'payment_required':
-      return <PaymentPrompt fileId={fileId} />
+      return (
+        <PaymentPrompt
+          fileId={fileId}
+          notice={status.message && status.message !== DEFAULT_PAYMENT_REQUIRED_MESSAGE ? status.message : undefined}
+        />
+      )
 
     case 'failed':
     case 'timeout':

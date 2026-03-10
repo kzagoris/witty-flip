@@ -21,6 +21,8 @@ import type { RateLimitStatusResponse } from "~/server/api/contracts"
 import { buildFAQPageSchema, buildSoftwareAppSchema } from "~/lib/structured-data"
 import { MAX_FILE_SIZE } from "~/lib/file-validation"
 
+const DEFAULT_PAYMENT_REQUIRED_MESSAGE = "Free daily limit reached. Complete payment to continue."
+
 const searchSchema = z.object({
     fileId: z.string().optional(),
     session_id: z.string().optional(),
@@ -192,7 +194,13 @@ function ConversionPage() {
         }
 
         if (flow.state === "payment_required") {
-            return <PaymentPrompt fileId={flow.fileId!} notice={flow.canceledMessage ?? undefined} />
+            const paymentNotice =
+                flow.canceledMessage ??
+                (flow.status?.message && flow.status.message !== DEFAULT_PAYMENT_REQUIRED_MESSAGE
+                    ? flow.status.message
+                    : undefined)
+
+            return <PaymentPrompt fileId={flow.fileId!} notice={paymentNotice} />
         }
 
         if (flow.state === "failed" || flow.state === "timeout") {
