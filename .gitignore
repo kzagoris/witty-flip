@@ -27,3 +27,4 @@ Thumbs.db
 
 # TanStack Router generated
 app/routeTree.gen.ts
+.tanstack/tmp/

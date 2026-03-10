@@ -100,7 +100,7 @@ void SendAlerts(List<string> alertList)
         return;
     }
 
-    // Dedup: check state file
+    // Check state file
     var state = LoadState(stateFile);
     var newAlerts = alertList.Where(a =>
     {

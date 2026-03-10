@@ -8,23 +8,86 @@ import { callServerFn } from "~/lib/api-client"
 import { getBlogPostBySlug } from "~/server/api/blog"
 import type { BlogPost } from "~/lib/blog"
 
+function escapeHtml(value: string): string {
+  return value
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;")
+}
+
+function renderBlogPostHtml(post: BlogPost): string {
+  return `<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>${escapeHtml(post.title)} | WittyFlip Blog</title>
+  </head>
+  <body>
+    <main>
+      <a href="/blog">Back to Blog</a>
+      <h1>${escapeHtml(post.title)}</h1>
+      <p>${escapeHtml(post.description)}</p>
+      <article>${post.html}</article>
+    </main>
+  </body>
+</html>`
+}
+
+export async function handleBlogPostRequest(slug: string): Promise<Response> {
+  const { readBlogPost } = await import("~/lib/blog")
+  const post = readBlogPost(slug)
+
+  if (!post) {
+    return new Response("Not found", {
+      status: 404,
+      headers: {
+        "Content-Type": "text/plain; charset=utf-8",
+      },
+    })
+  }
+
+  return new Response(renderBlogPostHtml(post), {
+    status: 200,
+    headers: {
+      "Content-Type": "text/html; charset=utf-8",
+    },
+  })
+}
+
+function resolveBaseUrl(): string {
+  return typeof window === "undefined"
+    ? (process.env.BASE_URL ?? "https://wittyflip.com").replace(/\/$/, "")
+    : window.location.origin
+}
+
+export async function loadBlogPostPage(
+  slug: string,
+): Promise<{ post: BlogPost; relatedConversion: ReturnType<typeof getConversionBySlug>; baseUrl: string }> {
+  const result = await callServerFn<BlogPost | null>(getBlogPostBySlug, { slug })
+
+  if (!result.ok) {
+    throw new Error(`Failed to load blog post "${slug}": ${result.error.message}`)
+  }
+
+  if (!result.data) {
+    // eslint-disable-next-line @typescript-eslint/only-throw-error
+    throw notFound()
+  }
+
+  const post = result.data
+  const relatedConversion = getConversionBySlug(post.relatedConversion)
+
+  return {
+    post,
+    relatedConversion,
+    baseUrl: resolveBaseUrl(),
+  }
+}
+
 export const Route = createFileRoute("/blog/$slug")({
-  loader: async ({ params }) => {
-    const result = await callServerFn<BlogPost | null>(getBlogPostBySlug, { slug: params.slug })
-
-    if (!result.ok || !result.data) {
-      // eslint-disable-next-line @typescript-eslint/only-throw-error
-      throw notFound()
-    }
-
-    const post = result.data
-    const relatedConversion = getConversionBySlug(post.relatedConversion)
-    const baseUrl = typeof window === "undefined"
-      ? (process.env.BASE_URL ?? "https://wittyflip.com").replace(/\/$/, "")
-      : window.location.origin
-
-    return { post, relatedConversion, baseUrl }
-  },
+  loader: ({ params }) => loadBlogPostPage(params.slug),
   head: ({ loaderData }) => {
     if (!loaderData) return {}
     const { post, baseUrl } = loaderData

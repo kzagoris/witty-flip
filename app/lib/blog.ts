@@ -6,6 +6,7 @@ import { createChildLogger } from "~/lib/logger"
 import { getConversionBySlug } from "~/lib/conversions"
 
 const log = createChildLogger({ module: "blog" })
+const BLOG_SLUG_PATTERN = /^[a-z0-9]+(?:-[a-z0-9]+)*$/
 
 export interface BlogPost {
   slug: string
@@ -42,6 +43,10 @@ function estimateReadingTime(text: string): number {
   return Math.max(1, Math.ceil(wordCount / 200))
 }
 
+function isValidBlogSlug(slug: string): boolean {
+  return BLOG_SLUG_PATTERN.test(slug)
+}
+
 function validateFrontmatter(
   data: Record<string, unknown>,
   filename: string,
@@ -66,6 +71,11 @@ function validateFrontmatter(
     return false
   }
 
+  if (!isValidBlogSlug(data.slug)) {
+    log.warn({ filename, slug: data.slug }, "Blog post slug contains invalid characters")
+    return false
+  }
+
   if (!isValidDateString(data.date as string)) {
     log.warn({ filename, date: data.date }, "Blog post has invalid date format")
     return false
@@ -83,6 +93,11 @@ function validateFrontmatter(
 }
 
 export function readBlogPost(slug: string): BlogPost | null {
+  if (!isValidBlogSlug(slug)) {
+    log.warn({ slug }, "Blog post slug contains invalid characters")
+    return null
+  }
+
   const filepath = path.join(getBlogDir(), `${slug}.md`)
 
   if (!fs.existsSync(filepath)) {
@@ -113,27 +128,29 @@ export function readBlogPost(slug: string): BlogPost | null {
 }
 
 export function readAllBlogPosts(): BlogPostSummary[] {
-  if (!fs.existsSync(getBlogDir())) {
+  const blogDir = getBlogDir()
+
+  if (!fs.existsSync(blogDir)) {
     return []
   }
 
-  const files = fs.readdirSync(getBlogDir()).filter((f) => f.endsWith(".md"))
+  const files = fs.readdirSync(blogDir).filter((file) => file.endsWith(".md"))
   const posts: BlogPostSummary[] = []
 
   for (const file of files) {
-    const raw = fs.readFileSync(path.join(getBlogDir(), file), "utf-8")
-    const { data } = matter(raw)
+    const slug = file.replace(/\.md$/, "")
+    const post = readBlogPost(slug)
 
-    if (!validateFrontmatter(data as Record<string, unknown>, file)) {
+    if (!post) {
       continue
     }
 
     posts.push({
-      slug: data.slug as string,
-      title: data.title as string,
-      description: data.description as string,
-      date: data.date as string,
-      relatedConversion: data.relatedConversion as string,
+      slug: post.slug,
+      title: post.title,
+      description: post.description,
+      date: post.date,
+      relatedConversion: post.relatedConversion,
     })
   }
 
@@ -141,12 +158,5 @@ export function readAllBlogPosts(): BlogPostSummary[] {
 }
 
 export function readAllBlogSlugs(): string[] {
-  if (!fs.existsSync(getBlogDir())) {
-    return []
-  }
-
-  return fs
-    .readdirSync(getBlogDir())
-    .filter((f) => f.endsWith(".md"))
-    .map((f) => f.replace(/\.md$/, ""))
+  return readAllBlogPosts().map((post) => post.slug)
 }

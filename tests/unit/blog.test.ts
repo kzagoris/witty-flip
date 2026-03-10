@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeAll, afterAll, beforeEach } from "vitest"
+import { describe, it, expect, beforeAll, afterAll, beforeEach, afterEach, vi } from "vitest"
 import fs from "node:fs"
 import path from "node:path"
 import os from "node:os"
@@ -90,6 +90,10 @@ Content.
     process.env["BLOG_CONTENT_DIR"] = blogDir
   })
 
+  afterEach(() => {
+    vi.restoreAllMocks()
+  })
+
   describe("readBlogPost", () => {
     it("returns a valid blog post with parsed HTML", async () => {
       const { readBlogPost } = await import("~/lib/blog")
@@ -109,6 +113,18 @@ Content.
       const { readBlogPost } = await import("~/lib/blog")
       const post = readBlogPost("nonexistent-slug")
       expect(post).toBeNull()
+    })
+
+    it("returns null without touching the filesystem when the slug is unsafe", async () => {
+      const existsSpy = vi.spyOn(fs, "existsSync")
+      const readSpy = vi.spyOn(fs, "readFileSync")
+      const { readBlogPost } = await import("~/lib/blog")
+
+      const post = readBlogPost("..\\..\\plans\\BLOG-IMPLEMENTATION")
+
+      expect(post).toBeNull()
+      expect(existsSpy).not.toHaveBeenCalled()
+      expect(readSpy).not.toHaveBeenCalled()
     })
 
     it("returns null when slug does not match filename", async () => {
@@ -159,12 +175,16 @@ Content.
   })
 
   describe("readAllBlogSlugs", () => {
-    it("returns all markdown filenames as slugs", async () => {
+    it("returns only valid blog post slugs", async () => {
       const { readAllBlogSlugs } = await import("~/lib/blog")
       const slugs = readAllBlogSlugs()
 
       expect(slugs).toContain("valid-post")
       expect(slugs).toContain("second-post")
+      expect(slugs).not.toContain("mismatched-filename")
+      expect(slugs).not.toContain("missing-title")
+      expect(slugs).not.toContain("bad-conversion")
+      expect(slugs).not.toContain("bad-date")
     })
   })
 

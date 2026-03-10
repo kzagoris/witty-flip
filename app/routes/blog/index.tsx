@@ -5,11 +5,66 @@ import { callServerFn } from "~/lib/api-client"
 import { getBlogPosts } from "~/server/api/blog"
 import type { BlogPostSummary } from "~/lib/blog"
 
+function escapeHtml(value: string): string {
+  return value
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;")
+}
+
+function renderBlogIndexHtml(posts: BlogPostSummary[]): string {
+  const items = posts.length === 0
+    ? "<p>No blog posts yet. Check back soon!</p>"
+    : posts
+      .map(
+        (post) => `<article>
+  <h2><a href="/blog/${encodeURIComponent(post.slug)}">${escapeHtml(post.title)}</a></h2>
+  <p>${escapeHtml(post.description)}</p>
+</article>`,
+      )
+      .join("\n")
+
+  return `<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Blog | WittyFlip</title>
+  </head>
+  <body>
+    <main>
+      <h1>WittyFlip Blog</h1>
+      ${items}
+    </main>
+  </body>
+</html>`
+}
+
+export async function handleBlogIndexRequest(): Promise<Response> {
+  const { readAllBlogPosts } = await import("~/lib/blog")
+  const posts = readAllBlogPosts()
+
+  return new Response(renderBlogIndexHtml(posts), {
+    status: 200,
+    headers: {
+      "Content-Type": "text/html; charset=utf-8",
+    },
+  })
+}
+
+export async function loadBlogIndexPage(): Promise<{ posts: BlogPostSummary[] }> {
+  const result = await callServerFn<BlogPostSummary[]>(getBlogPosts)
+
+  if (!result.ok) {
+    throw new Error(`Failed to load blog posts: ${result.error.message}`)
+  }
+
+  return { posts: result.data }
+}
+
 export const Route = createFileRoute("/blog/")({
-  loader: async () => {
-    const result = await callServerFn<BlogPostSummary[]>(getBlogPosts)
-    return { posts: result.ok ? result.data : [] }
-  },
+  loader: () => loadBlogIndexPage(),
   head: () => {
     const baseUrl = typeof window === "undefined"
       ? (process.env.BASE_URL ?? "https://wittyflip.com").replace(/\/$/, "")

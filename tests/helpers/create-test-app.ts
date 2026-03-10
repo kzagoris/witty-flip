@@ -70,6 +70,8 @@ export async function createTestApp(): Promise<TestApp> {
     readinessModule,
     metricsModule,
     sitemapModule,
+    blogIndexModule,
+    blogPostModule,
   ] = await Promise.all([
     import('~/server/api/upload'),
     import('~/server/api/convert'),
@@ -82,6 +84,8 @@ export async function createTestApp(): Promise<TestApp> {
     import('~/routes/api/health/ready'),
     import('~/routes/api/metrics'),
     import('~/routes/api/sitemap[.]xml'),
+    import('~/routes/blog/index'),
+    import('~/routes/blog/$slug'),
   ])
 
   const server = http.createServer((req, res) => {
@@ -116,6 +120,11 @@ export async function createTestApp(): Promise<TestApp> {
         response = await metricsModule.handleMetricsRequest(request)
       } else if (req.method === 'GET' && pathname === '/api/sitemap.xml') {
         response = await sitemapModule.handleSitemapRequest()
+      } else if (req.method === 'GET' && pathname === '/blog') {
+        response = await blogIndexModule.handleBlogIndexRequest()
+      } else if (req.method === 'GET' && /^\/blog\/[^/]+$/.test(pathname)) {
+        const slug = decodeURIComponent(pathname.split('/')[2] ?? '')
+        response = await blogPostModule.handleBlogPostRequest(slug)
       } else {
         response = Response.json({ error: 'not_found', message: 'Not found.' }, { status: 404 })
       }
