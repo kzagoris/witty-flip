@@ -15,6 +15,6 @@ export default tseslint.config(
     },
   },
   {
-    ignores: ['node_modules/', 'dist/', '.output/', 'drizzle/'],
+    ignores: ['node_modules/', 'dist/', '.output/', 'drizzle/', 'scripts/'],
   },
 )
