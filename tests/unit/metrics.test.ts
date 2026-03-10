@@ -199,7 +199,7 @@ describe('handleMetricsRequest', () => {
 
   it('returns queue age and stall metrics', async () => {
     await seed({ status: 'queued', createdAt: new Date(Date.now() - 90_000).toISOString() })
-    await seed({ status: 'converting', conversionStartedAt: new Date(Date.now() - 45_000).toISOString() })
+    await seed({ status: 'converting', conversionStartedAt: new Date(Date.now() - 6 * 60_000).toISOString() })
 
     const resp = await handleMetricsRequest(makeRequest({ Authorization: 'Bearer test-secret-key' }))
     const body = await resp.json() as MetricsResponse
@@ -207,7 +207,7 @@ describe('handleMetricsRequest', () => {
     expect(body.queue.oldestQueuedAgeMs).not.toBeNull()
     expect(body.queue.oldestConvertingAgeMs).not.toBeNull()
     expect(body.queue.oldestQueuedAgeMs!).toBeGreaterThanOrEqual(80_000)
-    expect(body.queue.oldestConvertingAgeMs!).toBeGreaterThanOrEqual(40_000)
+    expect(body.queue.oldestConvertingAgeMs!).toBeGreaterThanOrEqual(5 * 60_000)
     expect(body.queue.stalledJobs).toBe(1)
   })
 
