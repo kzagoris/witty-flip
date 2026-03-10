@@ -1,4 +1,4 @@
-import { sqliteTable, text, integer, uniqueIndex } from 'drizzle-orm/sqlite-core'
+import { sqliteTable, text, integer, uniqueIndex, index } from 'drizzle-orm/sqlite-core'
 import { sql } from 'drizzle-orm'
 
 export const rateLimits = sqliteTable('rate_limits', {
@@ -49,3 +49,18 @@ export const conversions = sqliteTable('conversions', {
   conversionCompletedAt: text('conversion_completed_at'),
   expiresAt: text('expires_at'),
 })
+
+export const conversionEvents = sqliteTable('conversion_events', {
+  id: integer('id').primaryKey({ autoIncrement: true }),
+  fileId: text('file_id').notNull(),
+  eventType: text('event_type').notNull(),
+  fromStatus: text('from_status'),
+  toStatus: text('to_status'),
+  paymentStatus: text('payment_status'),
+  toolName: text('tool_name'),
+  message: text('message').notNull(),
+  createdAt: text('created_at').default(sql`(datetime('now'))`),
+}, (table) => [
+  index('conversion_events_file_created_idx').on(table.fileId, table.createdAt),
+  index('conversion_events_event_created_idx').on(table.eventType, table.createdAt),
+])

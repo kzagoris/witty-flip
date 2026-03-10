@@ -1,4 +1,5 @@
 import { createServerFn, createServerOnlyFn } from "@tanstack/react-start"
+import { resolveRequestId, withRequestIdHeader } from "~/lib/observability"
 import {
     errorResult,
     isRecord,
@@ -132,9 +133,10 @@ export async function handleConversionStatusHttpRequest(
     peerIp?: string,
 ): Promise<Response> {
     const { resolveClientIpFromRequest } = await getConversionStatusRequestContext()
+    const requestId = resolveRequestId(request)
 
     const result = await processConversionStatus({ fileId }, resolveClientIpFromRequest(request, peerIp))
-    return Response.json(result.body, { status: result.status })
+    return Response.json(result.body, { status: result.status, headers: withRequestIdHeader(requestId) })
 }
 
 export const getConversionStatus = createServerFn({ method: "GET" }).handler(async ({ data }) => {

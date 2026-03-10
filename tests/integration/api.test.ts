@@ -1,4 +1,4 @@
-import { writeFileSync } from 'node:fs'
+import { rmSync, writeFileSync } from 'node:fs'
 import { eq } from 'drizzle-orm'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { createTestSandbox, setupTestDb } from '../helpers/test-env'
@@ -226,6 +226,51 @@ describe('Phase 3 API integration', () => {
       where: eq(schema.conversions.id, fileId),
     })
     expect(conversion?.status).toBe('expired')
+  })
+
+  it('marks missing artifacts as failed on download attempts', async () => {
+    registerConverter('pandoc', {
+      convert: (_inputPath, outputPath) => {
+        writeFileSync(outputPath, 'PDF DATA')
+        return Promise.resolve({
+          success: true,
+          outputPath,
+          exitCode: 0,
+          durationMs: 12,
+        } satisfies ConvertResult)
+      },
+    })
+
+    const upload = await app.request
+      .post('/api/upload')
+      .field('conversionType', 'markdown-to-pdf')
+      .attach('file', Buffer.from('# Hello\n'), 'hello.md')
+    const uploadBody = expectRecord(upload.body as unknown)
+    const fileId = getString(uploadBody, 'fileId')
+
+    await app.request.post('/api/convert').send({ fileId })
+    await waitForTerminalStatus(fileId)
+
+    const conversionBefore = await db.query.conversions.findFirst({
+      where: eq(schema.conversions.id, fileId),
+    })
+    if (!conversionBefore?.outputFilePath) {
+      throw new Error('Expected outputFilePath to be set after a successful conversion.')
+    }
+
+    rmSync(conversionBefore.outputFilePath, { force: true })
+
+    const download = await app.request.get(`/api/download/${fileId}`)
+    const body = expectRecord(download.body as unknown)
+
+    expect(download.status).toBe(404)
+    expect(getString(body, 'error')).toBe('artifact_missing')
+    expect(getString(body, 'status')).toBe('failed')
+
+    const conversionAfter = await db.query.conversions.findFirst({
+      where: eq(schema.conversions.id, fileId),
+    })
+    expect(conversionAfter?.status).toBe('failed')
   })
 
   it('enforces the per-minute API request cap', async () => {

@@ -58,10 +58,18 @@ if (!string.IsNullOrEmpty(metricsApiKey))
                 if (queuedJobs > 20)
                     alerts.Add($"queue_backlog: {queuedJobs} jobs queued");
 
+                var stalledJobs = json["queue"]?["stalledJobs"]?.GetValue<int>() ?? 0;
+                if (stalledJobs > 0)
+                    alerts.Add($"queue_stalled: {stalledJobs} conversion jobs appear stalled");
+
                 var successRate = json["conversions"]?["last1h"]?["successRate"]?.GetValue<int>() ?? 100;
                 var total = json["conversions"]?["last1h"]?["total"]?.GetValue<int>() ?? 0;
                 if (total > 0 && successRate < 75)
                     alerts.Add($"error_rate_high: Success rate {successRate}% in last hour");
+
+                var artifactMissing = json["events"]?["last1h"]?["artifactMissing"]?.GetValue<int>() ?? 0;
+                if (artifactMissing > 0)
+                    alerts.Add($"artifact_missing: {artifactMissing} completed artifacts went missing in the last hour");
 
                 var lastSuccessStr = json["conversions"]?["lastSuccessfulAt"]?.GetValue<string>();
                 if (lastSuccessStr is not null && DateTime.TryParse(lastSuccessStr, out var lastSuccess))

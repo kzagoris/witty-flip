@@ -1,5 +1,6 @@
 import { createFileRoute } from "@tanstack/react-router"
 import { createServerOnlyFn } from "@tanstack/react-start"
+import { resolveRequestId, withRequestIdHeader } from "~/lib/observability"
 import { errorResult, isUuid, normalizeConversionStatus } from "~/server/api/contracts"
 
 interface DownloadServerDeps {
@@ -83,6 +84,8 @@ function sanitizeDownloadFilename(originalFilename: string, targetExtension: str
 }
 
 export async function handleDownloadRequest(fileId: string, clientIp?: string): Promise<Response> {
+    const requestId = resolveRequestId()
+    const responseHeaders = withRequestIdHeader(requestId)
     const {
         fsModule,
         Readable,
@@ -110,13 +113,13 @@ export async function handleDownloadRequest(fileId: string, clientIp?: string): 
                     resetAt: requestLimit.resetAt,
                 },
             )
-            return Response.json(result.body, { status: result.status })
+            return Response.json(result.body, { status: result.status, headers: responseHeaders })
         }
     }
 
     if (!isUuid(fileId)) {
         const result = errorResult(400, "invalid_file_id", "A valid fileId is required.")
-        return Response.json(result.body, { status: result.status })
+        return Response.json(result.body, { status: result.status, headers: responseHeaders })
     }
 
     const conversion = await db.query.conversions.findFirst({
@@ -125,7 +128,7 @@ export async function handleDownloadRequest(fileId: string, clientIp?: string): 
 
     if (!conversion) {
         const result = errorResult(404, "not_found", "Conversion not found.", { fileId })
-        return Response.json(result.body, { status: result.status })
+        return Response.json(result.body, { status: result.status, headers: responseHeaders })
     }
 
     const conversionStatus = normalizeConversionStatus(conversion.status)
@@ -140,7 +143,7 @@ export async function handleDownloadRequest(fileId: string, clientIp?: string): 
             fileId,
             status: "expired",
         })
-        return Response.json(result.body, { status: result.status })
+        return Response.json(result.body, { status: result.status, headers: responseHeaders })
     }
 
     if (conversionStatus !== "completed") {
@@ -148,7 +151,7 @@ export async function handleDownloadRequest(fileId: string, clientIp?: string): 
             fileId,
             status: conversionStatus,
         })
-        return Response.json(result.body, { status: result.status })
+        return Response.json(result.body, { status: result.status, headers: responseHeaders })
     }
 
     const conversionMeta = getConversionBySlug(conversion.conversionType)
@@ -157,7 +160,7 @@ export async function handleDownloadRequest(fileId: string, clientIp?: string): 
             fileId,
             status: "failed",
         })
-        return Response.json(result.body, { status: result.status })
+        return Response.json(result.body, { status: result.status, headers: responseHeaders })
     }
 
     const outputPath = conversion.outputFilePath
@@ -168,11 +171,18 @@ export async function handleDownloadRequest(fileId: string, clientIp?: string): 
         handle = await fsModule.open(outputPath, "r")
     } catch (error) {
         if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+            await db
+                .update(conversions)
+                .set({
+                    status: "failed",
+                    errorMessage: "The converted file is no longer available. Please convert the file again.",
+                })
+                .where(eq(conversions.id, fileId))
             const result = errorResult(404, "artifact_missing", "The converted file is no longer available.", {
                 fileId,
-                status: "completed",
+                status: "failed",
             })
-            return Response.json(result.body, { status: result.status })
+            return Response.json(result.body, { status: result.status, headers: responseHeaders })
         }
         throw error
     }
@@ -187,6 +197,7 @@ export async function handleDownloadRequest(fileId: string, clientIp?: string): 
     return new Response(Readable.toWeb(stream) as BodyInit, {
         status: 200,
         headers: {
+            "X-Request-Id": requestId,
             "Content-Type": conversionMeta.targetMimeType,
             "Content-Length": String(stat.size),
             "Content-Disposition": `attachment; filename="${filename.fallback}"; filename*=UTF-8''${filename.encoded}`,

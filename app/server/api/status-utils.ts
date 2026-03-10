@@ -12,6 +12,22 @@ interface ConversionStatusRecord {
     [key: string]: unknown
 }
 
+async function markCompletedArtifactMissing(conversionId: string): Promise<void> {
+    const [{ and, eq }, { db }, { conversions }] = await Promise.all([
+        import("drizzle-orm"),
+        import("~/lib/db"),
+        import("~/lib/db/schema"),
+    ])
+
+    await db
+        .update(conversions)
+        .set({
+            status: "failed",
+            errorMessage: "The converted file is no longer available. Please convert the file again.",
+        })
+        .where(and(eq(conversions.id, conversionId), eq(conversions.status, "completed")))
+}
+
 export async function buildConversionStatusPayload(
     conversion: ConversionStatusRecord,
 ): Promise<ConversionStatusResponse> {
@@ -62,10 +78,11 @@ export async function buildConversionStatusPayload(
                 expiresAt: conversion.expiresAt ?? undefined,
             }
         } catch {
+            await markCompletedArtifactMissing(conversion.id)
             return {
                 fileId: conversion.id,
-                status: "completed",
-                progress: statusToProgress("completed"),
+                status: "failed",
+                progress: statusToProgress("failed"),
                 expiresAt: conversion.expiresAt ?? undefined,
                 errorCode: "artifact_missing",
                 message: "The converted file is no longer available. Please convert the file again.",

@@ -104,5 +104,112 @@ export async function setupTestDb(_sandbox: TestSandbox) {
     )
   `)
 
+  await client.execute(`
+    CREATE TABLE IF NOT EXISTS conversion_events (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      file_id TEXT NOT NULL,
+      event_type TEXT NOT NULL,
+      from_status TEXT,
+      to_status TEXT,
+      payment_status TEXT,
+      tool_name TEXT,
+      message TEXT NOT NULL,
+      created_at TEXT DEFAULT (datetime('now'))
+    )
+  `)
+
+  await client.execute(`
+    CREATE INDEX IF NOT EXISTS conversion_events_file_created_idx
+    ON conversion_events(file_id, created_at)
+  `)
+
+  await client.execute(`
+    CREATE INDEX IF NOT EXISTS conversion_events_event_created_idx
+    ON conversion_events(event_type, created_at)
+  `)
+
+  await client.execute(`
+    CREATE TRIGGER IF NOT EXISTS conversions_after_insert_event
+    AFTER INSERT ON conversions
+    BEGIN
+      INSERT INTO conversion_events (
+        file_id,
+        event_type,
+        to_status,
+        tool_name,
+        message
+      ) VALUES (
+        NEW.id,
+        'conversion_created',
+        NEW.status,
+        NEW.tool_name,
+        'Conversion created.'
+      );
+    END
+  `)
+
+  await client.execute(`
+    CREATE TRIGGER IF NOT EXISTS conversions_after_update_status_event
+    AFTER UPDATE OF status ON conversions
+    WHEN OLD.status IS NOT NEW.status
+    BEGIN
+      INSERT INTO conversion_events (
+        file_id,
+        event_type,
+        from_status,
+        to_status,
+        tool_name,
+        message
+      ) VALUES (
+        NEW.id,
+        'conversion_status_changed',
+        OLD.status,
+        NEW.status,
+        NEW.tool_name,
+        CASE
+          WHEN NEW.error_message IS NOT NULL AND length(NEW.error_message) > 0 THEN NEW.error_message
+          ELSE 'Conversion status changed.'
+        END
+      );
+    END
+  `)
+
+  await client.execute(`
+    CREATE TRIGGER IF NOT EXISTS payments_after_insert_event
+    AFTER INSERT ON payments
+    BEGIN
+      INSERT INTO conversion_events (
+        file_id,
+        event_type,
+        payment_status,
+        message
+      ) VALUES (
+        NEW.file_id,
+        'payment_created',
+        NEW.status,
+        'Payment record created.'
+      );
+    END
+  `)
+
+  await client.execute(`
+    CREATE TRIGGER IF NOT EXISTS payments_after_update_status_event
+    AFTER UPDATE OF status ON payments
+    WHEN OLD.status IS NOT NEW.status
+    BEGIN
+      INSERT INTO conversion_events (
+        file_id,
+        event_type,
+        payment_status,
+        message
+      ) VALUES (
+        NEW.file_id,
+        'payment_status_changed',
+        NEW.status,
+        'Payment status changed.'
+      );
+    END
+  `)
+
   return { db, schema }
 }

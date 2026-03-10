@@ -1,6 +1,34 @@
 import { createFileRoute } from "@tanstack/react-router"
 import { resolveRequestId, withRequestIdHeader } from "~/lib/observability"
 
+interface AggregatedToolStats {
+    toolName: string
+    total: number
+    successful: number
+    failed: number
+    timeout: number
+    successRate: number
+    avgDurationMs: number
+    p95DurationMs: number
+}
+
+function calculatePercentile(values: number[], percentile: number): number {
+    if (values.length === 0) return 0
+
+    const sorted = [...values].sort((left, right) => left - right)
+    const index = Math.max(0, Math.ceil(sorted.length * percentile) - 1)
+    return sorted[Math.min(index, sorted.length - 1)] ?? 0
+}
+
+function toAgeMs(value: string | null | undefined, nowMs: number): number | null {
+    if (!value) return null
+
+    const parsed = Date.parse(value)
+    if (Number.isNaN(parsed)) return null
+
+    return Math.max(0, nowMs - parsed)
+}
+
 export async function handleMetricsRequest(request: Request): Promise<Response> {
     const requestId = resolveRequestId(request)
     const responseHeaders = withRequestIdHeader(requestId, { "Cache-Control": "no-store" })
@@ -28,7 +56,17 @@ export async function handleMetricsRequest(request: Request): Promise<Response> 
         )
     }
 
-    const [{ createRequestLogger }, pathModule, fs, { db }, { conversions }, { eq, sql }, { MAX_CONCURRENT_JOBS }, { CONVERSIONS_DIR }, { getRequestRateLimitBucketCount }] = await Promise.all([
+    const [
+        { createRequestLogger },
+        pathModule,
+        fs,
+        { db },
+        { conversions, conversionEvents },
+        { eq, sql },
+        { CONVERSION_TIMEOUT_MS, MAX_CONCURRENT_JOBS },
+        { CONVERSIONS_DIR },
+        { getRequestRateLimitBucketCount },
+    ] = await Promise.all([
         import("~/lib/server-observability"),
         import("node:path"),
         import("node:fs/promises"),
@@ -41,9 +79,11 @@ export async function handleMetricsRequest(request: Request): Promise<Response> 
     ])
     const requestLogger = createRequestLogger("/api/metrics", requestId)
 
+    const nowMs = Date.now()
     const oneHourAgo = new Date(Date.now() - 60 * 60 * 1000).toISOString()
+    const stalledBefore = new Date(nowMs - CONVERSION_TIMEOUT_MS).toISOString()
 
-    const [diskStats, queueStats, conversionStats, lastSuccess] = await Promise.all([
+    const [diskStats, queueStats, conversionStats, eventStats, lastSuccess] = await Promise.all([
         // Disk stats
         (async () => {
             try {
@@ -99,7 +139,7 @@ export async function handleMetricsRequest(request: Request): Promise<Response> 
 
         // Queue stats
         (async () => {
-            const [activeResult, queuedResult] = await Promise.all([
+            const [activeResult, queuedResult, oldestQueuedResult, oldestConvertingResult, stalledResult] = await Promise.all([
                 db
                     .select({ count: sql<number>`count(*)` })
                     .from(conversions)
@@ -108,11 +148,39 @@ export async function handleMetricsRequest(request: Request): Promise<Response> 
                     .select({ count: sql<number>`count(*)` })
                     .from(conversions)
                     .where(eq(conversions.status, "queued")),
+                db
+                    .select({ createdAt: conversions.createdAt })
+                    .from(conversions)
+                    .where(eq(conversions.status, "queued"))
+                    .orderBy(sql`${conversions.createdAt} ASC`)
+                    .limit(1),
+                db
+                    .select({ conversionStartedAt: conversions.conversionStartedAt })
+                    .from(conversions)
+                    .where(eq(conversions.status, "converting"))
+                    .orderBy(sql`${conversions.conversionStartedAt} ASC`)
+                    .limit(1),
+                db
+                    .select({ count: sql<number>`count(*)` })
+                    .from(conversions)
+                    .where(
+                        sql`${conversions.status} = 'converting' AND ${conversions.conversionStartedAt} IS NOT NULL AND ${conversions.conversionStartedAt} <= ${stalledBefore}`,
+                    ),
             ])
+
+            const activeJobs = activeResult[0]?.count ?? 0
+            const queuedJobs = queuedResult[0]?.count ?? 0
+            const oldestQueuedAgeMs = toAgeMs(oldestQueuedResult[0]?.createdAt ?? null, nowMs)
+            const oldestConvertingAgeMs = toAgeMs(oldestConvertingResult[0]?.conversionStartedAt ?? null, nowMs)
+
             return {
-                activeJobs: activeResult[0]?.count ?? 0,
-                queuedJobs: queuedResult[0]?.count ?? 0,
+                activeJobs,
+                queuedJobs,
                 maxConcurrent: MAX_CONCURRENT_JOBS,
+                availableSlots: Math.max(0, MAX_CONCURRENT_JOBS - activeJobs),
+                oldestQueuedAgeMs,
+                oldestConvertingAgeMs,
+                stalledJobs: stalledResult[0]?.count ?? 0,
             }
         })(),
 
@@ -120,26 +188,116 @@ export async function handleMetricsRequest(request: Request): Promise<Response> 
         (async () => {
             const rows = await db
                 .select({
-                    total: sql<number>`count(*)`,
-                    successful: sql<number>`sum(case when ${conversions.status} = 'completed' then 1 else 0 end)`,
-                    failed: sql<number>`sum(case when ${conversions.status} = 'failed' then 1 else 0 end)`,
-                    timeout: sql<number>`sum(case when ${conversions.status} = 'timeout' then 1 else 0 end)`,
-                    avgDurationMs: sql<number>`avg(${conversions.conversionTimeMs})`,
+                    toolName: conversions.toolName,
+                    status: conversions.status,
+                    conversionTimeMs: conversions.conversionTimeMs,
                 })
                 .from(conversions)
                 .where(
                     sql`${conversions.conversionCompletedAt} >= ${oneHourAgo} AND ${conversions.status} IN ('completed', 'failed', 'timeout')`,
                 )
 
-            const row = rows[0]
-            const total = row?.total ?? 0
-            const successful = row?.successful ?? 0
-            const failed = row?.failed ?? 0
-            const timeout = row?.timeout ?? 0
-            const avgDurationMs = total > 0 ? Math.round(row?.avgDurationMs ?? 0) : 0
-            const successRate = total > 0 ? Math.round((successful / total) * 100) : 100
+            const toolStats = new Map<string, {
+                total: number
+                successful: number
+                failed: number
+                timeout: number
+                durations: number[]
+            }>()
+            const durations: number[] = []
+            let total = 0
+            let successful = 0
+            let failed = 0
+            let timeout = 0
 
-            return { total, successful, failed, timeout, successRate, avgDurationMs }
+            for (const row of rows) {
+                total += 1
+                if (row.status === "completed") successful += 1
+                if (row.status === "failed") failed += 1
+                if (row.status === "timeout") timeout += 1
+
+                if (typeof row.conversionTimeMs === "number") {
+                    durations.push(row.conversionTimeMs)
+                }
+
+                const toolName = row.toolName ?? "unknown"
+                const currentToolStats = toolStats.get(toolName) ?? {
+                    total: 0,
+                    successful: 0,
+                    failed: 0,
+                    timeout: 0,
+                    durations: [],
+                }
+                currentToolStats.total += 1
+                if (row.status === "completed") currentToolStats.successful += 1
+                if (row.status === "failed") currentToolStats.failed += 1
+                if (row.status === "timeout") currentToolStats.timeout += 1
+                if (typeof row.conversionTimeMs === "number") {
+                    currentToolStats.durations.push(row.conversionTimeMs)
+                }
+                toolStats.set(toolName, currentToolStats)
+            }
+
+            const avgDurationMs = durations.length > 0
+                ? Math.round(durations.reduce((sum, duration) => sum + duration, 0) / durations.length)
+                : 0
+            const successRate = total > 0 ? Math.round((successful / total) * 100) : 100
+            const byTool: AggregatedToolStats[] = [...toolStats.entries()]
+                .map(([toolName, stats]) => ({
+                    toolName,
+                    total: stats.total,
+                    successful: stats.successful,
+                    failed: stats.failed,
+                    timeout: stats.timeout,
+                    successRate: stats.total > 0 ? Math.round((stats.successful / stats.total) * 100) : 100,
+                    avgDurationMs: stats.durations.length > 0
+                        ? Math.round(stats.durations.reduce((sum, duration) => sum + duration, 0) / stats.durations.length)
+                        : 0,
+                    p95DurationMs: calculatePercentile(stats.durations, 0.95),
+                }))
+                .sort((left, right) => left.toolName.localeCompare(right.toolName))
+
+            return {
+                total,
+                successful,
+                failed,
+                timeout,
+                successRate,
+                avgDurationMs,
+                p50DurationMs: calculatePercentile(durations, 0.5),
+                p95DurationMs: calculatePercentile(durations, 0.95),
+                byTool,
+            }
+        })(),
+
+        // Event stats (last 1hr)
+        (async () => {
+            const rows = await db
+                .select({
+                    total: sql<number>`count(*)`,
+                    statusChanges: sql<number>`sum(case when ${conversionEvents.eventType} = 'conversion_status_changed' then 1 else 0 end)`,
+                    paymentCompleted: sql<number>`sum(case when ${conversionEvents.eventType} = 'payment_status_changed' and ${conversionEvents.paymentStatus} = 'completed' then 1 else 0 end)`,
+                    artifactMissing: sql<number>`sum(case when ${conversionEvents.eventType} = 'conversion_status_changed' and ${conversionEvents.fromStatus} = 'completed' and ${conversionEvents.toStatus} = 'failed' then 1 else 0 end)`,
+                })
+                .from(conversionEvents)
+                .where(sql`${conversionEvents.createdAt} >= ${oneHourAgo}`)
+
+            const row = rows[0]
+            if (!row) {
+                return {
+                    total: 0,
+                    statusChanges: 0,
+                    paymentCompleted: 0,
+                    artifactMissing: 0,
+                }
+            }
+
+            return {
+                total: row.total ?? 0,
+                statusChanges: row.statusChanges ?? 0,
+                paymentCompleted: row.paymentCompleted ?? 0,
+                artifactMissing: row.artifactMissing ?? 0,
+            }
         })(),
 
         // Last successful conversion (all time)
@@ -161,6 +319,9 @@ export async function handleMetricsRequest(request: Request): Promise<Response> 
             conversions: {
                 last1h: conversionStats,
                 lastSuccessfulAt: lastSuccess,
+            },
+            events: {
+                last1h: eventStats,
             },
             requestRateLimit: {
                 activeBuckets: getRequestRateLimitBucketCount(),

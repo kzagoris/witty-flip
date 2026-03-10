@@ -39,7 +39,9 @@ scp bin/Release/net9.0/linux-x64/publish/alert-check user@vps:/opt/wittyflip/
 - **disk_high**: Disk usage > 80%
 - **metrics_partial**: Metrics endpoint responded but a subsystem reported unavailable data
 - **queue_backlog**: More than 20 queued jobs
+- **queue_stalled**: One or more conversions appear stuck past the expected conversion timeout window
 - **error_rate_high**: Success rate < 75% in last hour (when conversions > 0)
+- **artifact_missing**: One or more completed conversion artifacts disappeared in the last hour
 - **no_recent_success**: No successful conversion in 30+ minutes
 
 ## VPS Crontab

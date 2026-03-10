@@ -13,6 +13,17 @@ interface ReadinessOkResponse {
       status: string
       latencyMs: number
     }
+    storage: {
+      status: string
+      path: string
+      writable: boolean
+    }
+    converters: {
+      status: string
+      requiredTools: string[]
+      missingTools: string[]
+      coverage: string
+    }
   }
 }
 
@@ -25,6 +36,18 @@ interface ReadinessDegradedResponse {
       status: string
       errorCode: string
     }
+    storage: {
+      status: string
+      path: string
+      writable?: boolean
+      errorCode?: string
+    }
+    converters: {
+      status: string
+      requiredTools: string[]
+      missingTools: string[]
+      coverage: string
+    }
   }
 }
 
@@ -35,6 +58,10 @@ beforeEach(async () => {
 
   const sandbox = createTestSandbox()
   await setupTestDb(sandbox)
+  process.env.STRIPE_SECRET_KEY = 'sk_test_fake_key'
+  process.env.STRIPE_WEBHOOK_SECRET = 'whsec_test_secret'
+  process.env.METRICS_API_KEY = 'test-metrics-key'
+  process.env.BASE_URL = 'http://localhost:3000'
 
   const mod = await import('~/routes/api/health/ready')
   handleReadinessRequest = mod.handleReadinessRequest
@@ -53,6 +80,13 @@ describe('handleReadinessRequest', () => {
     expect(body.dbLatencyMs).toBeGreaterThanOrEqual(0)
     expect(body.checks.database.status).toBe('ok')
     expect(body.checks.database.latencyMs).toBe(body.dbLatencyMs)
+    expect(body.checks.storage.status).toBe('ok')
+    expect(body.checks.storage.writable).toBe(true)
+    expect(body.checks.storage.path).toContain('data')
+    expect(body.checks.converters.status).toBe('ok')
+    expect(body.checks.converters.requiredTools).toContain('pandoc')
+    expect(body.checks.converters.missingTools).toEqual([])
+    expect(body.checks.converters.coverage).toBe('registered')
   })
 
   it('includes Cache-Control: no-store header', async () => {
@@ -77,6 +111,8 @@ describe('handleReadinessRequest', () => {
     expect(typeof body.timestamp).toBe('string')
     expect(body.checks.database.status).toBe('down')
     expect(body.checks.database.errorCode).toBe('database_unavailable')
+    expect(body.checks.storage.status).toBe('ok')
+    expect(body.checks.converters.status).toBe('ok')
     expect(body).not.toHaveProperty('dbLatencyMs')
   })
 })
