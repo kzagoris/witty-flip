@@ -16,6 +16,67 @@ const stripeWebhookSecret = process.env.STRIPE_WEBHOOK_SECRET
 export const stripe = stripeSecretKey ? new Stripe(stripeSecretKey) : null
 
 const BASE_URL = process.env.BASE_URL ?? 'http://localhost:3000'
+const CONVERSION_PAYMENT_AMOUNT_CENTS = 49
+const CONVERSION_PAYMENT_CURRENCY = 'usd'
+const CHECKOUT_EXPIRED_MESSAGE = 'Your checkout session expired. Please try payment again.'
+const PAYMENT_INCOMPLETE_MESSAGE = 'Payment was not completed. Please try again.'
+
+function normalizeCurrency(value: string | null | undefined): string {
+  return value?.trim().toLowerCase() ?? CONVERSION_PAYMENT_CURRENCY
+}
+
+function isPaidCheckoutSession(session: Stripe.Checkout.Session): boolean {
+  return session.payment_status === 'paid'
+}
+
+function isExpiredCheckoutSession(session: Stripe.Checkout.Session): boolean {
+  return session.status === 'expired' || Boolean(session.expires_at && session.expires_at * 1000 <= Date.now())
+}
+
+function makeCompletedSessionStub(
+  fileId: string,
+  payment: typeof payments.$inferSelect,
+): Stripe.Checkout.Session {
+  return {
+    id: payment.stripeSessionId,
+    metadata: { fileId },
+    payment_intent: payment.stripePaymentIntent,
+  } as unknown as Stripe.Checkout.Session
+}
+
+function validateCompletedSession(
+  payment: typeof payments.$inferSelect,
+  session: Stripe.Checkout.Session,
+): void {
+  if (session.payment_status && session.payment_status !== 'paid') {
+    throw new Error('Stripe checkout session is not marked as paid.')
+  }
+
+  if (session.amount_total != null && session.amount_total !== payment.amountCents) {
+    throw new Error('Stripe session amount does not match payment record.')
+  }
+
+  if (session.currency && normalizeCurrency(session.currency) !== normalizeCurrency(payment.currency)) {
+    throw new Error('Stripe session currency does not match payment record.')
+  }
+}
+
+async function updatePendingPaymentStatus(paymentId: number, status: string): Promise<void> {
+  await db
+    .update(payments)
+    .set({ status })
+    .where(and(eq(payments.id, paymentId), eq(payments.status, 'pending')))
+}
+
+async function restorePaymentRequired(fileId: string, message: string): Promise<void> {
+  await db
+    .update(conversions)
+    .set({
+      status: 'payment_required',
+      errorMessage: message,
+    })
+    .where(and(eq(conversions.id, fileId), eq(conversions.status, 'pending_payment')))
+}
 
 async function getReusableCheckoutSession(
   fileId: string,
@@ -84,7 +145,10 @@ export async function createCheckoutSession(fileId: string): Promise<{ checkoutU
   if (reusableSession) {
     await db
       .update(conversions)
-      .set({ status: 'pending_payment' })
+      .set({
+        status: 'pending_payment',
+        errorMessage: null,
+      })
       .where(eq(conversions.id, fileId))
 
     return reusableSession
@@ -96,8 +160,8 @@ export async function createCheckoutSession(fileId: string): Promise<{ checkoutU
     line_items: [
       {
         price_data: {
-          currency: 'usd',
-          unit_amount: 49,
+          currency: CONVERSION_PAYMENT_CURRENCY,
+          unit_amount: CONVERSION_PAYMENT_AMOUNT_CENTS,
           product_data: {
             name: `File conversion: ${conversion.conversionType}`,
           },
@@ -105,6 +169,7 @@ export async function createCheckoutSession(fileId: string): Promise<{ checkoutU
         quantity: 1,
       },
     ],
+    client_reference_id: fileId,
     metadata: {
       fileId,
       conversionType: conversion.conversionType,
@@ -120,8 +185,8 @@ export async function createCheckoutSession(fileId: string): Promise<{ checkoutU
       .values({
         fileId,
         stripeSessionId: session.id,
-        amountCents: 49,
-        currency: 'usd',
+        amountCents: CONVERSION_PAYMENT_AMOUNT_CENTS,
+        currency: CONVERSION_PAYMENT_CURRENCY,
         conversionType: conversion.conversionType,
         ipAddress: conversion.ipAddress,
         checkoutExpiresAt: session.expires_at
@@ -133,7 +198,10 @@ export async function createCheckoutSession(fileId: string): Promise<{ checkoutU
 
     await tx
       .update(conversions)
-      .set({ status: 'pending_payment' })
+      .set({
+        status: 'pending_payment',
+        errorMessage: null,
+      })
       .where(eq(conversions.id, fileId))
   })
 
@@ -166,6 +234,9 @@ export async function handleCheckoutCompleted(session: Stripe.Checkout.Session):
   if (!payment) {
     throw new Error('No payment record found for Stripe session.')
   }
+  if (payment.fileId !== fileId) {
+    throw new Error('Stripe session fileId does not match payment record.')
+  }
 
   const conversion = await db.query.conversions.findFirst({
     where: eq(conversions.id, fileId),
@@ -173,6 +244,8 @@ export async function handleCheckoutCompleted(session: Stripe.Checkout.Session):
   if (!conversion) {
     throw new Error('No conversion record found for fileId.')
   }
+
+  validateCompletedSession(payment, session)
 
   const previousStatus = conversion.status
 
@@ -208,7 +281,10 @@ export async function handleCheckoutCompleted(session: Stripe.Checkout.Session):
 
     await tx
       .update(conversions)
-      .set({ wasPaid: 1 })
+      .set({
+        wasPaid: 1,
+        errorMessage: null,
+      })
       .where(eq(conversions.id, fileId))
   })
 
@@ -221,4 +297,79 @@ export async function handleCheckoutCompleted(session: Stripe.Checkout.Session):
     stripeSessionId: session.id,
     previousStatus,
   }, 'Completed Stripe checkout handling')
+}
+
+export async function reconcilePendingPayment(fileId: string): Promise<void> {
+  const conversion = await db.query.conversions.findFirst({
+    where: eq(conversions.id, fileId),
+  })
+  if (!conversion || conversion.status !== 'pending_payment') {
+    return
+  }
+
+  const paymentRecords = await db
+    .select()
+    .from(payments)
+    .where(eq(payments.fileId, fileId))
+    .orderBy(desc(payments.createdAt), desc(payments.id))
+
+  const completedPayment = paymentRecords.find((payment) => payment.status === 'completed')
+  if (completedPayment) {
+    await handleCheckoutCompleted(makeCompletedSessionStub(fileId, completedPayment))
+    return
+  }
+
+  let sawActiveCheckout = false
+  let restoreMessage: string | undefined
+
+  for (const payment of paymentRecords) {
+    if (payment.status !== 'pending') {
+      continue
+    }
+
+    if (payment.checkoutExpiresAt && new Date(payment.checkoutExpiresAt).getTime() <= Date.now()) {
+      await updatePendingPaymentStatus(payment.id, 'expired')
+      restoreMessage ??= CHECKOUT_EXPIRED_MESSAGE
+      continue
+    }
+
+    if (!stripe) {
+      sawActiveCheckout = true
+      continue
+    }
+
+    try {
+      const session = await stripe.checkout.sessions.retrieve(payment.stripeSessionId)
+
+      if (isPaidCheckoutSession(session)) {
+        await handleCheckoutCompleted(session)
+        return
+      }
+
+      if (isExpiredCheckoutSession(session)) {
+        await updatePendingPaymentStatus(payment.id, 'expired')
+        restoreMessage ??= CHECKOUT_EXPIRED_MESSAGE
+        continue
+      }
+
+      if (session.status === 'complete') {
+        await updatePendingPaymentStatus(payment.id, 'failed')
+        restoreMessage ??= PAYMENT_INCOMPLETE_MESSAGE
+        continue
+      }
+
+      sawActiveCheckout = true
+    } catch (err) {
+      sawActiveCheckout = true
+      stripeLogger.warn({
+        fileId,
+        stripeSessionId: payment.stripeSessionId,
+        err,
+      }, 'Failed to reconcile pending Stripe checkout session')
+    }
+  }
+
+  if (!sawActiveCheckout && restoreMessage) {
+    await restorePaymentRequired(fileId, restoreMessage)
+  }
 }

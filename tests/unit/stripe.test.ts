@@ -79,11 +79,21 @@ function makeStripeSession(opts: {
   sessionId: string
   fileId: string
   paymentIntent?: string
+  amountTotal?: number
+  currency?: string
+  paymentStatus?: Stripe.Checkout.Session.PaymentStatus
+  status?: Stripe.Checkout.Session.Status
+  expiresAt?: number | null
 }): Stripe.Checkout.Session {
   const session = {
     id: opts.sessionId,
     metadata: { fileId: opts.fileId },
     payment_intent: opts.paymentIntent ?? 'pi_test_default',
+    amount_total: opts.amountTotal ?? 49,
+    currency: opts.currency ?? 'usd',
+    payment_status: opts.paymentStatus ?? 'paid',
+    status: opts.status ?? 'complete',
+    expires_at: opts.expiresAt ?? null,
   }
 
   return session as unknown as Stripe.Checkout.Session
@@ -337,6 +347,58 @@ describe('stripe', () => {
       expect(mockEnqueueJob).toHaveBeenCalledWith(fileId)
     })
 
+    it('rejects checkout completion when the Stripe session amount does not match the payment record', async () => {
+      const fileId = 'conv-amount-mismatch'
+      await insertConversion(db, schema, fileId, 'pending_payment')
+      await insertPayment(db, schema, {
+        fileId,
+        stripeSessionId: 'sess_amount_mismatch',
+        status: 'pending',
+      })
+
+      const { handleCheckoutCompleted } = await import('~/lib/stripe')
+
+      await expect(handleCheckoutCompleted(
+        makeStripeSession({
+          sessionId: 'sess_amount_mismatch',
+          fileId,
+          amountTotal: 149,
+        }),
+      )).rejects.toThrow('Stripe session amount does not match payment record.')
+
+      const payment = await db.query.payments.findFirst({
+        where: eq(schema.payments.stripeSessionId, 'sess_amount_mismatch'),
+      })
+      expect(payment?.status).toBe('pending')
+      expect(mockEnqueueJob).not.toHaveBeenCalled()
+    })
+
+    it('rejects checkout completion when the Stripe session currency does not match the payment record', async () => {
+      const fileId = 'conv-currency-mismatch'
+      await insertConversion(db, schema, fileId, 'pending_payment')
+      await insertPayment(db, schema, {
+        fileId,
+        stripeSessionId: 'sess_currency_mismatch',
+        status: 'pending',
+      })
+
+      const { handleCheckoutCompleted } = await import('~/lib/stripe')
+
+      await expect(handleCheckoutCompleted(
+        makeStripeSession({
+          sessionId: 'sess_currency_mismatch',
+          fileId,
+          currency: 'eur',
+        }),
+      )).rejects.toThrow('Stripe session currency does not match payment record.')
+
+      const payment = await db.query.payments.findFirst({
+        where: eq(schema.payments.stripeSessionId, 'sess_currency_mismatch'),
+      })
+      expect(payment?.status).toBe('pending')
+      expect(mockEnqueueJob).not.toHaveBeenCalled()
+    })
+
     it('does not enqueue when conversion is already past pending_payment', async () => {
       const fileId = 'conv-queued'
       await insertConversion(db, schema, fileId, 'queued')
@@ -385,6 +447,100 @@ describe('stripe', () => {
         expect(mockEnqueueJob).toHaveBeenCalledOnce()
         expect(mockEnqueueJob).toHaveBeenCalledWith(fileId)
       })
+    })
+  })
+
+  describe('reconcilePendingPayment', () => {
+    it('completes and re-queues a paid checkout when polling finds a successful Stripe session before the webhook arrives', async () => {
+      const fileId = 'conv-reconcile-paid'
+      await insertConversion(db, schema, fileId, 'pending_payment')
+      await insertPayment(db, schema, {
+        fileId,
+        stripeSessionId: 'sess_reconcile_paid',
+        status: 'pending',
+      })
+
+      mockStripeClient.checkout.sessions.retrieve.mockResolvedValue(
+        makeStripeSession({
+          sessionId: 'sess_reconcile_paid',
+          fileId,
+          paymentIntent: 'pi_reconcile_paid',
+        }),
+      )
+
+      const { reconcilePendingPayment } = await import('~/lib/stripe')
+      await reconcilePendingPayment(fileId)
+
+      const payment = await db.query.payments.findFirst({
+        where: eq(schema.payments.stripeSessionId, 'sess_reconcile_paid'),
+      })
+      expect(payment?.status).toBe('completed')
+      expect(payment?.stripePaymentIntent).toBe('pi_reconcile_paid')
+
+      const conversion = await db.query.conversions.findFirst({
+        where: eq(schema.conversions.id, fileId),
+      })
+      expect(conversion?.wasPaid).toBe(1)
+      expect(mockEnqueueJob).toHaveBeenCalledOnce()
+      expect(mockEnqueueJob).toHaveBeenCalledWith(fileId)
+    })
+
+    it('restores payment_required when the latest checkout session has expired', async () => {
+      const fileId = 'conv-reconcile-expired'
+      await insertConversion(db, schema, fileId, 'pending_payment')
+      await insertPayment(db, schema, {
+        fileId,
+        stripeSessionId: 'sess_reconcile_expired',
+        status: 'pending',
+        checkoutExpiresAt: new Date(Date.now() - 1_000).toISOString(),
+      })
+
+      const { reconcilePendingPayment } = await import('~/lib/stripe')
+      await reconcilePendingPayment(fileId)
+
+      const payment = await db.query.payments.findFirst({
+        where: eq(schema.payments.stripeSessionId, 'sess_reconcile_expired'),
+      })
+      expect(payment?.status).toBe('expired')
+      expect(mockStripeClient.checkout.sessions.retrieve).not.toHaveBeenCalled()
+
+      const conversion = await db.query.conversions.findFirst({
+        where: eq(schema.conversions.id, fileId),
+      })
+      expect(conversion?.status).toBe('payment_required')
+      expect(conversion?.errorMessage).toBe('Your checkout session expired. Please try payment again.')
+    })
+
+    it('restores payment_required when Stripe reports that checkout completed without a paid status', async () => {
+      const fileId = 'conv-reconcile-unpaid'
+      await insertConversion(db, schema, fileId, 'pending_payment')
+      await insertPayment(db, schema, {
+        fileId,
+        stripeSessionId: 'sess_reconcile_unpaid',
+        status: 'pending',
+      })
+
+      mockStripeClient.checkout.sessions.retrieve.mockResolvedValue(
+        makeStripeSession({
+          sessionId: 'sess_reconcile_unpaid',
+          fileId,
+          paymentStatus: 'unpaid',
+        }),
+      )
+
+      const { reconcilePendingPayment } = await import('~/lib/stripe')
+      await reconcilePendingPayment(fileId)
+
+      const payment = await db.query.payments.findFirst({
+        where: eq(schema.payments.stripeSessionId, 'sess_reconcile_unpaid'),
+      })
+      expect(payment?.status).toBe('failed')
+
+      const conversion = await db.query.conversions.findFirst({
+        where: eq(schema.conversions.id, fileId),
+      })
+      expect(conversion?.status).toBe('payment_required')
+      expect(conversion?.errorMessage).toBe('Payment was not completed. Please try again.')
     })
   })
 })
