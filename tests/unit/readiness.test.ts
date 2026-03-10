@@ -15,14 +15,7 @@ interface ReadinessOkResponse {
     }
     storage: {
       status: string
-      path: string
       writable: boolean
-    }
-    converters: {
-      status: string
-      requiredTools: string[]
-      missingTools: string[]
-      coverage: string
     }
   }
 }
@@ -38,15 +31,8 @@ interface ReadinessDegradedResponse {
     }
     storage: {
       status: string
-      path: string
       writable?: boolean
       errorCode?: string
-    }
-    converters: {
-      status: string
-      requiredTools: string[]
-      missingTools: string[]
-      coverage: string
     }
   }
 }
@@ -82,11 +68,7 @@ describe('handleReadinessRequest', () => {
     expect(body.checks.database.latencyMs).toBe(body.dbLatencyMs)
     expect(body.checks.storage.status).toBe('ok')
     expect(body.checks.storage.writable).toBe(true)
-    expect(body.checks.storage.path).toContain('data')
-    expect(body.checks.converters.status).toBe('ok')
-    expect(body.checks.converters.requiredTools).toContain('pandoc')
-    expect(body.checks.converters.missingTools).toEqual([])
-    expect(body.checks.converters.coverage).toBe('registered')
+    expect(body.checks).not.toHaveProperty('converters')
   })
 
   it('includes Cache-Control: no-store header', async () => {
@@ -112,7 +94,6 @@ describe('handleReadinessRequest', () => {
     expect(body.checks.database.status).toBe('down')
     expect(body.checks.database.errorCode).toBe('database_unavailable')
     expect(body.checks.storage.status).toBe('ok')
-    expect(body.checks.converters.status).toBe('ok')
     expect(body).not.toHaveProperty('dbLatencyMs')
   })
 })

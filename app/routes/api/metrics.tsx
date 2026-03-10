@@ -66,6 +66,9 @@ export async function handleMetricsRequest(request: Request): Promise<Response> 
         { CONVERSION_TIMEOUT_MS, MAX_CONCURRENT_JOBS },
         { CONVERSIONS_DIR },
         { getRequestRateLimitBucketCount },
+        conversionsModule,
+        convertersModule,
+        registerAllConvertersModule,
     ] = await Promise.all([
         import("~/lib/server-observability"),
         import("node:path"),
@@ -76,6 +79,9 @@ export async function handleMetricsRequest(request: Request): Promise<Response> 
         import("~/lib/queue"),
         import("~/lib/conversion-files"),
         import("~/lib/request-rate-limit"),
+        import("~/lib/conversions"),
+        import("~/lib/converters"),
+        import("~/lib/converters/register-all"),
     ])
     const requestLogger = createRequestLogger("/api/metrics", requestId)
 
@@ -312,10 +318,41 @@ export async function handleMetricsRequest(request: Request): Promise<Response> 
         })(),
     ])
 
+    // Converter registration check
+    let converterCheck: { status: string; requiredTools: string[]; missingTools: string[]; coverage: string } = {
+        status: "ok",
+        requiredTools: [],
+        missingTools: [],
+        coverage: "registered",
+    }
+    try {
+        registerAllConvertersModule.registerAllConverters()
+        const requiredTools = [...new Set(conversionsModule.getAllConversionTypes().map(c => c.toolName))]
+        const missingTools = requiredTools.filter(t => !convertersModule.getConverter(t))
+        converterCheck = {
+            status: missingTools.length > 0 ? "down" : "ok",
+            requiredTools,
+            missingTools,
+            coverage: missingTools.length > 0 ? "incomplete" : "registered",
+        }
+        if (missingTools.length > 0) {
+            requestLogger.error({ missingTools }, "Converter check failed")
+        }
+    } catch (error) {
+        requestLogger.error({ err: error }, "Converter registration failed during metrics check")
+        converterCheck = {
+            status: "down",
+            requiredTools: [],
+            missingTools: ["registration_failed"],
+            coverage: "registration_failed",
+        }
+    }
+
     return Response.json(
         {
             disk: diskStats,
             queue: queueStats,
+            converters: converterCheck,
             conversions: {
                 last1h: conversionStats,
                 lastSuccessfulAt: lastSuccess,

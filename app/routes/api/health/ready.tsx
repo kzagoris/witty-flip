@@ -5,14 +5,11 @@ export async function handleReadinessRequest(request?: Request): Promise<Respons
     const requestId = resolveRequestId(request)
     const headers = withRequestIdHeader(requestId, { "Cache-Control": "no-store" })
     const timestamp = new Date().toISOString()
-    const [{ createRequestLogger }, conversionFilesModule, fsModule, pathModule, conversionsModule, convertersModule, registerAllConvertersModule] = await Promise.all([
+    const [{ createRequestLogger }, conversionFilesModule, fsModule, pathModule] = await Promise.all([
         import("~/lib/server-observability"),
         import("~/lib/conversion-files"),
         import("node:fs/promises"),
         import("node:path"),
-        import("~/lib/conversions"),
-        import("~/lib/converters"),
-        import("~/lib/converters/register-all"),
     ])
     const requestLogger = createRequestLogger("/api/health/ready", requestId)
 
@@ -21,33 +18,15 @@ export async function handleReadinessRequest(request?: Request): Promise<Respons
 
     const checks: {
         database: { status: string; latencyMs?: number; errorCode?: string }
-        storage: { status: string; path: string; writable?: boolean; errorCode?: string }
-        converters: { status: string; requiredTools: string[]; missingTools: string[]; coverage: string }
+        storage: { status: string; writable?: boolean; errorCode?: string }
     } = {
         database: {
             status: "ok",
         },
         storage: {
             status: "ok",
-            path: conversionFilesModule.CONVERSIONS_DIR,
             writable: true,
         },
-        converters: {
-            status: "ok",
-            requiredTools: [],
-            missingTools: [],
-            coverage: "registered",
-        },
-    }
-
-    try {
-        registerAllConvertersModule.registerAllConverters()
-    } catch (error) {
-        requestLogger.error({ err: error }, "Converter registration failed during readiness check")
-        degraded = true
-        checks.converters.status = "down"
-        checks.converters.coverage = "registration_failed"
-        checks.converters.missingTools = ["registration_failed"]
     }
 
     const databaseStartTime = performance.now()
@@ -77,17 +56,7 @@ export async function handleReadinessRequest(request?: Request): Promise<Respons
         checks.storage.status = "down"
         checks.storage.writable = false
         checks.storage.errorCode = "storage_unavailable"
-        requestLogger.error({ err: error, path: conversionFilesModule.CONVERSIONS_DIR }, "Storage readiness check failed")
-    }
-
-    const requiredTools = [...new Set(conversionsModule.getAllConversionTypes().map(conversion => conversion.toolName))]
-    const missingTools = requiredTools.filter(toolName => !convertersModule.getConverter(toolName))
-    checks.converters.requiredTools = requiredTools
-    checks.converters.missingTools = missingTools
-    if (missingTools.length > 0) {
-        degraded = true
-        checks.converters.status = "down"
-        requestLogger.error({ missingTools }, "Converter readiness check failed")
+        requestLogger.error({ err: error }, "Storage readiness check failed")
     }
 
     return Response.json(

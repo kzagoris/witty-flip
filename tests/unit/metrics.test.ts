@@ -18,6 +18,12 @@ interface MetricsResponse {
     usedPercent: number
     fileCount: number
   }
+  converters: {
+    status: string
+    requiredTools: string[]
+    missingTools: string[]
+    coverage: string
+  }
   queue: {
     activeJobs: number
     queuedJobs: number
@@ -142,6 +148,7 @@ describe('handleMetricsRequest', () => {
 
     const body = await resp.json() as MetricsResponse
     expect(body).toHaveProperty('disk')
+    expect(body).toHaveProperty('converters')
     expect(body).toHaveProperty('queue')
     expect(body).toHaveProperty('conversions')
     expect(body).toHaveProperty('events')
@@ -152,6 +159,13 @@ describe('handleMetricsRequest', () => {
     expect(body.disk).toHaveProperty('filesystemStatsAvailable')
     expect(body.disk).toHaveProperty('usedBytes')
     expect(body.disk).toHaveProperty('fileCount')
+    expect(body.converters).toHaveProperty('status')
+    expect(body.converters).toHaveProperty('requiredTools')
+    expect(body.converters).toHaveProperty('missingTools')
+    expect(body.converters).toHaveProperty('coverage')
+    expect(body.converters.requiredTools).toContain('pandoc')
+    expect(body.converters.missingTools).toEqual([])
+    expect(body.converters.coverage).toBe('registered')
     expect(body.queue).toHaveProperty('activeJobs')
     expect(body.queue).toHaveProperty('queuedJobs')
     expect(body.queue).toHaveProperty('maxConcurrent')
