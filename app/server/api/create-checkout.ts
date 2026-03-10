@@ -1,4 +1,6 @@
 import { createServerFn, createServerOnlyFn } from "@tanstack/react-start"
+import { resolveRequestId, withRequestIdHeader } from "~/lib/observability"
+import { createRequestLogger } from "~/lib/server-observability"
 import {
     errorResult,
     isRecord,
@@ -90,14 +92,22 @@ function mapCheckoutError(fileId: string, error: unknown): ApiResult<ApiErrorRes
 export async function processCreateCheckout(
     data: unknown,
     clientIp: string,
+    context: { requestId?: string } = {},
 ): Promise<ApiResult<CheckoutResponse | ApiErrorResponse>> {
     const { eq, db, conversions, checkAndConsumeRequestRateLimit, initializeServerRuntime, createCheckoutSession } =
         await getCreateCheckoutServerDeps()
 
     initializeServerRuntime()
+    const requestId = context.requestId ?? resolveRequestId()
+    const requestLogger = createRequestLogger("/api/create-checkout", requestId, { clientIp })
 
     const requestLimit = checkAndConsumeRequestRateLimit(clientIp)
     if (!requestLimit.allowed) {
+        requestLogger.warn({
+            limit: requestLimit.limit,
+            remaining: requestLimit.remaining,
+            resetAt: requestLimit.resetAt,
+        }, "Create-checkout request throttled")
         return errorResult(429, "request_rate_limited", "Too many requests. Please wait a minute and try again.", {
             limit: requestLimit.limit,
             remaining: requestLimit.remaining,
@@ -136,6 +146,7 @@ export async function processCreateCheckout(
 
     try {
         const checkout = await createCheckoutSession(fileId)
+        requestLogger.info({ fileId, sessionId: checkout.sessionId }, "Created checkout session")
         return {
             status: 200,
             body: {
@@ -145,15 +156,22 @@ export async function processCreateCheckout(
             },
         }
     } catch (error) {
-        return mapCheckoutError(fileId, error)
+        const result = mapCheckoutError(fileId, error)
+        if (result.status >= 500) {
+            requestLogger.error({ fileId, err: error }, "Failed to create checkout session")
+        } else {
+            requestLogger.info({ fileId, status: result.status }, "Rejected checkout session request")
+        }
+        return result
     }
 }
 
 export async function handleCreateCheckoutHttpRequest(request: Request, peerIp?: string): Promise<Response> {
     const { resolveClientIpFromRequest } = await getCreateCheckoutRequestContext()
 
-    const result = await processCreateCheckout(await request.json(), resolveClientIpFromRequest(request, peerIp))
-    return Response.json(result.body, { status: result.status })
+    const requestId = resolveRequestId(request)
+    const result = await processCreateCheckout(await request.json(), resolveClientIpFromRequest(request, peerIp), { requestId })
+    return Response.json(result.body, { status: result.status, headers: withRequestIdHeader(requestId) })
 }
 
 export const createCheckout = createServerFn({ method: "POST" }).handler(async ({ data }) => {

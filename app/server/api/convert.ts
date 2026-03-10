@@ -1,4 +1,6 @@
 import { createServerFn, createServerOnlyFn } from "@tanstack/react-start"
+import { resolveRequestId, withRequestIdHeader } from "~/lib/observability"
+import { createRequestLogger } from "~/lib/server-observability"
 import {
     errorResult,
     isRecord,
@@ -93,6 +95,7 @@ function parseFileIdInput(data: unknown): string | undefined {
 export async function processConvert(
     data: unknown,
     clientIp: string,
+    context: { requestId?: string } = {},
 ): Promise<ApiResult<ConversionStatusResponse | ApiErrorResponse>> {
     const {
         eq,
@@ -108,9 +111,16 @@ export async function processConvert(
     } = await getConvertServerDeps()
 
     initializeServerRuntime()
+    const requestId = context.requestId ?? resolveRequestId()
+    const requestLogger = createRequestLogger("/api/convert", requestId, { clientIp })
 
     const requestLimit = checkAndConsumeRequestRateLimit(clientIp)
     if (!requestLimit.allowed) {
+        requestLogger.warn({
+            limit: requestLimit.limit,
+            remaining: requestLimit.remaining,
+            resetAt: requestLimit.resetAt,
+        }, "Convert request throttled")
         return errorResult(429, "request_rate_limited", "Too many requests. Please wait a minute and try again.", {
             limit: requestLimit.limit,
             remaining: requestLimit.remaining,
@@ -135,6 +145,7 @@ export async function processConvert(
 
     if (conversionStatus === "payment_required") {
         const limit = await checkRateLimit(clientIp)
+        requestLogger.info({ fileId, remaining: limit.remaining, limit: limit.limit, resetAt: limit.resetAt }, "Conversion requires payment")
         return errorResult(402, "payment_required", "Free daily limit reached. Complete payment to continue.", {
             fileId,
             status: "payment_required",
@@ -175,6 +186,12 @@ export async function processConvert(
             })
             .where(eq(conversions.id, fileId))
 
+        requestLogger.info({
+            fileId,
+            remaining: reservation.remaining,
+            limit: reservation.limit,
+            resetAt: reservation.resetAt,
+        }, "Free conversion quota exhausted; conversion moved to payment_required")
         return errorResult(402, "payment_required", "Free daily limit reached. Complete payment to continue.", {
             fileId,
             status: "payment_required",
@@ -194,11 +211,17 @@ export async function processConvert(
             .where(eq(conversions.id, fileId))
 
         await enqueueJob(fileId)
-    } catch {
-        await releaseRateLimitSlot(clientIp, reservation.rateLimitDate)
+    } catch (error) {
+        requestLogger.error({ fileId, err: error }, "Failed to queue conversion")
+        try {
+            await releaseRateLimitSlot(clientIp, reservation.rateLimitDate)
+        } catch (releaseError) {
+            requestLogger.error({ fileId, err: releaseError }, "Failed to release reserved rate-limit slot after queue failure")
+        }
         return errorResult(500, "queue_unavailable", "Unable to queue the conversion right now.", { fileId })
     }
 
+    requestLogger.info({ fileId, rateLimitDate: reservation.rateLimitDate }, "Queued conversion request")
     return {
         status: 200,
         body: await buildConversionStatusPayload({
@@ -213,8 +236,9 @@ export async function processConvert(
 export async function handleConvertHttpRequest(request: Request, peerIp?: string): Promise<Response> {
     const { resolveClientIpFromRequest } = await getConvertRequestContext()
 
-    const result = await processConvert(await request.json(), resolveClientIpFromRequest(request, peerIp))
-    return Response.json(result.body, { status: result.status })
+    const requestId = resolveRequestId(request)
+    const result = await processConvert(await request.json(), resolveClientIpFromRequest(request, peerIp), { requestId })
+    return Response.json(result.body, { status: result.status, headers: withRequestIdHeader(requestId) })
 }
 
 export const convertFile = createServerFn({ method: "POST" }).handler(async ({ data }) => {

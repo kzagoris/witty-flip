@@ -1,12 +1,16 @@
 import pino from 'pino'
 import { isProduction } from '~/lib/env'
 
-const defaultLevel = isProduction ? 'info' : 'debug'
+const isTest = process.env.VITEST === 'true'
+const defaultLevel = isTest ? 'silent' : isProduction ? 'info' : 'debug'
 
 export const logger = pino({
   level: process.env.LOG_LEVEL ?? defaultLevel,
   timestamp: pino.stdTimeFunctions.isoTime,
-  ...(isProduction
+  serializers: {
+    err: pino.stdSerializers.err,
+  },
+  ...(isProduction || isTest
     ? {}
     : {
         transport: {

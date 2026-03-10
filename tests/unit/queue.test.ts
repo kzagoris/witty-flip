@@ -338,6 +338,25 @@ describe('runConversion — failure path', () => {
 
     expect(() => fs.statSync(partialOutputPath)).toThrow()
   })
+
+  it('sanitizes unexpected thrown error messages before persisting them', async () => {
+    const id = await seed({ status: 'uploaded', rateLimitDate: new Date().toISOString().slice(0, 10) })
+
+    const { reserveRateLimitSlot } = await import('~/lib/rate-limit')
+    await reserveRateLimitSlot('127.0.0.1', new Date().toISOString().slice(0, 10))
+
+    registerConverter('pandoc', {
+      convert: () => {
+        throw new Error('Unable to read C:\\sensitive\\nested\\input.docx during conversion')
+      },
+    })
+
+    await enqueueJob(id)
+    const row = await waitForStatus(id, 'failed')
+
+    expect(row?.errorMessage).toContain('input.docx')
+    expect(row?.errorMessage).not.toContain('C:\\sensitive')
+  })
 })
 
 // ---------------------------------------------------------------------------

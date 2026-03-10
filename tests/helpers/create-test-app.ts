@@ -109,9 +109,9 @@ export async function createTestApp(): Promise<TestApp> {
       } else if (req.method === 'POST' && pathname === '/api/webhook/stripe') {
         response = await webhookModule.handleStripeWebhookRequest(request)
       } else if (req.method === 'GET' && pathname === '/api/health') {
-        response = healthModule.handleHealthRequest()
+        response = healthModule.handleHealthRequest(request)
       } else if (req.method === 'GET' && pathname === '/api/health/ready') {
-        response = await readinessModule.handleReadinessRequest()
+        response = await readinessModule.handleReadinessRequest(request)
       } else if (req.method === 'GET' && pathname === '/api/metrics') {
         response = await metricsModule.handleMetricsRequest(request)
       } else if (req.method === 'GET' && pathname === '/api/sitemap.xml') {

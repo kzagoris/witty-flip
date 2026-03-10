@@ -1,3 +1,4 @@
+import fs from 'node:fs/promises'
 import { randomUUID } from 'node:crypto'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { createTestSandbox, setupTestDb } from '../helpers/test-env'
@@ -8,12 +9,21 @@ import type * as MetricsModule from '~/routes/api/metrics'
 type DB = Awaited<ReturnType<typeof setupTestDb>>['db']
 
 interface MetricsResponse {
-  disk: { usedBytes: number; totalBytes: number; usedPercent: number; fileCount: number }
+  disk: {
+    available: boolean
+    errorCode: string | null
+    filesystemStatsAvailable: boolean
+    usedBytes: number
+    totalBytes: number
+    usedPercent: number
+    fileCount: number
+  }
   queue: { activeJobs: number; queuedJobs: number; maxConcurrent: number }
   conversions: {
     last1h: { total: number; successful: number; failed: number; timeout: number; successRate: number; avgDurationMs: number }
     lastSuccessfulAt: string | null
   }
+  requestRateLimit: { activeBuckets: number }
   system: { uptime: number; timestamp: string }
 }
 
@@ -99,7 +109,11 @@ describe('handleMetricsRequest', () => {
     expect(body).toHaveProperty('disk')
     expect(body).toHaveProperty('queue')
     expect(body).toHaveProperty('conversions')
+    expect(body).toHaveProperty('requestRateLimit')
     expect(body).toHaveProperty('system')
+    expect(body.disk).toHaveProperty('available')
+    expect(body.disk).toHaveProperty('errorCode')
+    expect(body.disk).toHaveProperty('filesystemStatsAvailable')
     expect(body.disk).toHaveProperty('usedBytes')
     expect(body.disk).toHaveProperty('fileCount')
     expect(body.queue).toHaveProperty('activeJobs')
@@ -107,6 +121,7 @@ describe('handleMetricsRequest', () => {
     expect(body.queue).toHaveProperty('maxConcurrent')
     expect(body.conversions).toHaveProperty('last1h')
     expect(body.conversions).toHaveProperty('lastSuccessfulAt')
+    expect(body.requestRateLimit).toHaveProperty('activeBuckets')
     expect(body.system).toHaveProperty('uptime')
     expect(body.system).toHaveProperty('timestamp')
   })
@@ -152,6 +167,7 @@ describe('handleMetricsRequest', () => {
   it('includes Cache-Control: no-store header', async () => {
     const resp = await handleMetricsRequest(makeRequest({ Authorization: 'Bearer test-secret-key' }))
     expect(resp.headers.get('Cache-Control')).toBe('no-store')
+    expect(resp.headers.get('x-request-id')).toBeTruthy()
   })
 
   it('returns lastSuccessfulAt from all-time, not just last hour', async () => {
@@ -166,5 +182,17 @@ describe('handleMetricsRequest', () => {
     expect(body.conversions.last1h.total).toBe(0)
     // But should appear in lastSuccessfulAt
     expect(body.conversions.lastSuccessfulAt).toBe(twoHoursAgo)
+  })
+
+  it('surfaces disk metric collection failures explicitly', async () => {
+    const { CONVERSIONS_DIR } = await import('~/lib/conversion-files')
+    await fs.rm(CONVERSIONS_DIR, { recursive: true, force: true })
+
+    const resp = await handleMetricsRequest(makeRequest({ Authorization: 'Bearer test-secret-key' }))
+    const body = await resp.json() as MetricsResponse
+
+    expect(body.disk.available).toBe(false)
+    expect(body.disk.errorCode).toBe('conversions_dir_unavailable')
+    expect(body.disk.filesystemStatsAvailable).toBe(false)
   })
 })

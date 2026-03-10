@@ -1,11 +1,14 @@
 import { createFileRoute } from "@tanstack/react-router"
+import { resolveRequestId, withRequestIdHeader } from "~/lib/observability"
 
 export async function handleMetricsRequest(request: Request): Promise<Response> {
+    const requestId = resolveRequestId(request)
+    const responseHeaders = withRequestIdHeader(requestId, { "Cache-Control": "no-store" })
     const metricsApiKey = process.env.METRICS_API_KEY
     if (!metricsApiKey) {
         return Response.json(
             { error: "metrics_not_configured", message: "Metrics API key not configured." },
-            { status: 503, headers: { "Cache-Control": "no-store" } },
+            { status: 503, headers: responseHeaders },
         )
     }
 
@@ -13,7 +16,7 @@ export async function handleMetricsRequest(request: Request): Promise<Response> 
     if (!authHeader || !authHeader.startsWith("Bearer ") || authHeader.length <= 7) {
         return Response.json(
             { error: "unauthorized", message: "Missing or malformed Authorization header." },
-            { status: 401, headers: { "Cache-Control": "no-store" } },
+            { status: 401, headers: responseHeaders },
         )
     }
 
@@ -21,18 +24,22 @@ export async function handleMetricsRequest(request: Request): Promise<Response> 
     if (token !== metricsApiKey) {
         return Response.json(
             { error: "unauthorized", message: "Invalid API key." },
-            { status: 401, headers: { "Cache-Control": "no-store" } },
+            { status: 401, headers: responseHeaders },
         )
     }
 
-    const [fs, { db }, { conversions }, { eq, sql }, { MAX_CONCURRENT_JOBS }, { CONVERSIONS_DIR }] = await Promise.all([
+    const [{ createRequestLogger }, pathModule, fs, { db }, { conversions }, { eq, sql }, { MAX_CONCURRENT_JOBS }, { CONVERSIONS_DIR }, { getRequestRateLimitBucketCount }] = await Promise.all([
+        import("~/lib/server-observability"),
+        import("node:path"),
         import("node:fs/promises"),
         import("~/lib/db"),
         import("~/lib/db/schema"),
         import("drizzle-orm"),
         import("~/lib/queue"),
         import("~/lib/conversion-files"),
+        import("~/lib/request-rate-limit"),
     ])
+    const requestLogger = createRequestLogger("/api/metrics", requestId)
 
     const oneHourAgo = new Date(Date.now() - 60 * 60 * 1000).toISOString()
 
@@ -45,7 +52,7 @@ export async function handleMetricsRequest(request: Request): Promise<Response> 
 
                 const statResults = await Promise.all(
                     files.map(entry =>
-                        fs.stat(`${CONVERSIONS_DIR}/${entry.name}`)
+                        fs.stat(pathModule.join(CONVERSIONS_DIR, entry.name))
                             .then(stat => stat.size)
                             .catch(() => 0),
                     ),
@@ -56,18 +63,37 @@ export async function handleMetricsRequest(request: Request): Promise<Response> 
 
                 let totalBytes = 0
                 let usedPercent = 0
+                let filesystemStatsAvailable = true
                 try {
                     const fsStats = await fs.statfs(CONVERSIONS_DIR)
                     totalBytes = fsStats.bsize * fsStats.blocks
                     const usedFsBytes = fsStats.bsize * (fsStats.blocks - fsStats.bfree)
                     usedPercent = totalBytes > 0 ? Math.round((usedFsBytes / totalBytes) * 100) : 0
-                } catch {
-                    // statfs may not work on all platforms
+                } catch (error) {
+                    filesystemStatsAvailable = false
+                    requestLogger.warn({ err: error }, "Filesystem capacity metrics are unavailable")
                 }
 
-                return { usedBytes, totalBytes, usedPercent, fileCount }
-            } catch {
-                return { usedBytes: 0, totalBytes: 0, usedPercent: 0, fileCount: 0 }
+                return {
+                    available: true,
+                    errorCode: null,
+                    filesystemStatsAvailable,
+                    usedBytes,
+                    totalBytes,
+                    usedPercent,
+                    fileCount,
+                }
+            } catch (error) {
+                requestLogger.error({ err: error }, "Failed to collect disk usage metrics")
+                return {
+                    available: false,
+                    errorCode: "conversions_dir_unavailable",
+                    filesystemStatsAvailable: false,
+                    usedBytes: 0,
+                    totalBytes: 0,
+                    usedPercent: 0,
+                    fileCount: 0,
+                }
             }
         })(),
 
@@ -136,6 +162,9 @@ export async function handleMetricsRequest(request: Request): Promise<Response> 
                 last1h: conversionStats,
                 lastSuccessfulAt: lastSuccess,
             },
+            requestRateLimit: {
+                activeBuckets: getRequestRateLimitBucketCount(),
+            },
             system: {
                 uptime: Math.floor(process.uptime()),
                 timestamp: new Date().toISOString(),
@@ -143,7 +172,7 @@ export async function handleMetricsRequest(request: Request): Promise<Response> 
         },
         {
             status: 200,
-            headers: { "Cache-Control": "no-store" },
+            headers: responseHeaders,
         },
     )
 }

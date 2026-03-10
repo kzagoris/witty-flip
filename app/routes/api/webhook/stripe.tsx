@@ -1,6 +1,7 @@
 import type Stripe from "stripe"
 import { createFileRoute } from "@tanstack/react-router"
 import { createServerOnlyFn } from "@tanstack/react-start"
+import { resolveRequestId, withRequestIdHeader } from "~/lib/observability"
 import { errorResult } from "~/server/api/contracts"
 
 interface StripeWebhookServerDeps {
@@ -39,6 +40,10 @@ function isConfigurationError(error: unknown): boolean {
 }
 
 export async function handleStripeWebhookRequest(request: Request): Promise<Response> {
+    const requestId = resolveRequestId(request)
+    const responseHeaders = withRequestIdHeader(requestId)
+    const { createRequestLogger } = await import("~/lib/server-observability")
+    const requestLogger = createRequestLogger("/api/webhook/stripe", requestId)
     const { initializeServerRuntime, handleCheckoutCompleted, verifyWebhookSignature } =
         await getStripeWebhookServerDeps()
 
@@ -46,8 +51,9 @@ export async function handleStripeWebhookRequest(request: Request): Promise<Resp
 
     const signature = request.headers.get("stripe-signature")
     if (!signature) {
+        requestLogger.warn("Stripe webhook missing signature header")
         const result = errorResult(400, "missing_signature", "Missing Stripe signature header.")
-        return Response.json(result.body, { status: result.status })
+        return Response.json(result.body, { status: result.status, headers: responseHeaders })
     }
 
     const rawBody = await request.text()
@@ -57,26 +63,37 @@ export async function handleStripeWebhookRequest(request: Request): Promise<Resp
         event = verifyWebhookSignature(rawBody, signature)
     } catch (error) {
         if (isConfigurationError(error)) {
+            requestLogger.error({ err: error }, "Stripe webhook verification is not configured")
             const result = errorResult(500, "stripe_not_configured", "Stripe webhook verification is not configured.")
-            return Response.json(result.body, { status: result.status })
+            return Response.json(result.body, { status: result.status, headers: responseHeaders })
         }
 
+        requestLogger.warn({ err: error }, "Stripe webhook signature verification failed")
         const result = errorResult(400, "invalid_signature", "The Stripe webhook signature is invalid.")
-        return Response.json(result.body, { status: result.status })
+        return Response.json(result.body, { status: result.status, headers: responseHeaders })
     }
 
+    const eventLogger = requestLogger.child({
+        stripeEventId: event.id,
+        stripeEventType: event.type,
+    })
+
     if (event.type === "checkout.session.completed") {
+        const checkoutSession = event.data.object
         try {
-            await handleCheckoutCompleted(event.data.object)
+            await handleCheckoutCompleted(checkoutSession)
+            eventLogger.info({ stripeSessionId: checkoutSession.id }, "Processed Stripe checkout.session.completed webhook")
         } catch (error) {
             if (isUnrecoverableWebhookError(error)) {
-                return Response.json({ received: true }, { status: 200 })
+                eventLogger.warn({ stripeSessionId: checkoutSession.id, err: error }, "Acknowledged Stripe webhook with unrecoverable application state")
+                return Response.json({ received: true }, { status: 200, headers: responseHeaders })
             }
+            eventLogger.error({ stripeSessionId: checkoutSession.id, err: error }, "Stripe webhook processing failed")
             throw error
         }
     }
 
-    return Response.json({ received: true }, { status: 200 })
+    return Response.json({ received: true }, { status: 200, headers: responseHeaders })
 }
 
 export const Route = createFileRoute("/api/webhook/stripe")({

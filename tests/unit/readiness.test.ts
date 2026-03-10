@@ -8,14 +8,24 @@ interface ReadinessOkResponse {
   uptime: number
   timestamp: string
   dbLatencyMs: number
+  checks: {
+    database: {
+      status: string
+      latencyMs: number
+    }
+  }
 }
 
 interface ReadinessDegradedResponse {
   status: string
   uptime: number
   timestamp: string
-  error?: unknown
-  dbLatencyMs?: unknown
+  checks: {
+    database: {
+      status: string
+      errorCode: string
+    }
+  }
 }
 
 let handleReadinessRequest: typeof ReadinessModule.handleReadinessRequest
@@ -41,11 +51,14 @@ describe('handleReadinessRequest', () => {
     expect(typeof body.timestamp).toBe('string')
     expect(typeof body.dbLatencyMs).toBe('number')
     expect(body.dbLatencyMs).toBeGreaterThanOrEqual(0)
+    expect(body.checks.database.status).toBe('ok')
+    expect(body.checks.database.latencyMs).toBe(body.dbLatencyMs)
   })
 
   it('includes Cache-Control: no-store header', async () => {
     const resp = await handleReadinessRequest()
     expect(resp.headers.get('Cache-Control')).toBe('no-store')
+    expect(resp.headers.get('x-request-id')).toBeTruthy()
   })
 
   it('returns 503 with no raw DB error details when DB query fails', async () => {
@@ -62,8 +75,8 @@ describe('handleReadinessRequest', () => {
     expect(body.status).toBe('degraded')
     expect(typeof body.uptime).toBe('number')
     expect(typeof body.timestamp).toBe('string')
-    // Must NOT expose raw error details
-    expect(body).not.toHaveProperty('error')
+    expect(body.checks.database.status).toBe('down')
+    expect(body.checks.database.errorCode).toBe('database_unavailable')
     expect(body).not.toHaveProperty('dbLatencyMs')
   })
 })

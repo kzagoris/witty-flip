@@ -46,6 +46,10 @@ if (!string.IsNullOrEmpty(metricsApiKey))
             var json = JsonNode.Parse(await resp.Content.ReadAsStringAsync());
             if (json is not null)
             {
+                var diskAvailable = json["disk"]?["available"]?.GetValue<bool?>() ?? true;
+                if (!diskAvailable)
+                    alerts.Add("metrics_partial: Disk metrics unavailable");
+
                 var diskPercent = json["disk"]?["usedPercent"]?.GetValue<int>() ?? 0;
                 if (diskPercent > 80)
                     alerts.Add($"disk_high: Disk usage at {diskPercent}%");

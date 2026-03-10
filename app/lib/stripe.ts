@@ -2,11 +2,13 @@ import Stripe from 'stripe'
 import { and, desc, eq } from 'drizzle-orm'
 import { db } from '~/lib/db'
 import { conversions, payments } from '~/lib/db/schema'
+import { createChildLogger } from '~/lib/logger'
 import { enqueueJob } from '~/lib/queue'
 
+const stripeLogger = createChildLogger({ component: 'stripe' })
 const stripeSecretKey = process.env.STRIPE_SECRET_KEY
 if (!stripeSecretKey) {
-  console.warn('STRIPE_SECRET_KEY is not set. Stripe integration will not work.')
+  stripeLogger.warn('STRIPE_SECRET_KEY is not set. Stripe integration will not work.')
 }
 
 const stripeWebhookSecret = process.env.STRIPE_WEBHOOK_SECRET
@@ -39,12 +41,21 @@ async function getReusableCheckoutSession(
     try {
       const session = await stripe.checkout.sessions.retrieve(payment.stripeSessionId)
       if (session.status === 'open' && session.url) {
+        stripeLogger.info({
+          fileId,
+          stripeSessionId: session.id,
+        }, 'Reusing open Stripe checkout session')
         return {
           checkoutUrl: session.url,
           sessionId: session.id,
         }
       }
-    } catch {
+    } catch (err) {
+      stripeLogger.warn({
+        fileId,
+        stripeSessionId: payment.stripeSessionId,
+        err,
+      }, 'Failed to inspect reusable Stripe checkout session')
       continue
     }
   }
@@ -126,6 +137,10 @@ export async function createCheckoutSession(fileId: string): Promise<{ checkoutU
       .where(eq(conversions.id, fileId))
   })
 
+  stripeLogger.info({
+    fileId,
+    stripeSessionId: session.id,
+  }, 'Created Stripe checkout session')
   return { checkoutUrl: session.url!, sessionId: session.id }
 }
 
@@ -164,8 +179,18 @@ export async function handleCheckoutCompleted(session: Stripe.Checkout.Session):
   // Idempotency: if payment already completed, check for recovery
   if (payment.status === 'completed') {
     if (previousStatus === 'pending_payment') {
+      stripeLogger.info({
+        fileId,
+        stripeSessionId: session.id,
+        previousStatus,
+      }, 'Received duplicate Stripe webhook and re-queued pending conversion')
       await enqueueJob(fileId)
     }
+    stripeLogger.info({
+      fileId,
+      stripeSessionId: session.id,
+      previousStatus,
+    }, 'Received duplicate Stripe webhook for completed payment')
     return
   }
 
@@ -190,4 +215,10 @@ export async function handleCheckoutCompleted(session: Stripe.Checkout.Session):
   if (previousStatus === 'pending_payment') {
     await enqueueJob(fileId)
   }
+
+  stripeLogger.info({
+    fileId,
+    stripeSessionId: session.id,
+    previousStatus,
+  }, 'Completed Stripe checkout handling')
 }

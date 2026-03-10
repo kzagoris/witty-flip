@@ -1,4 +1,6 @@
 import { createServerFn, createServerOnlyFn } from "@tanstack/react-start"
+import { resolveRequestId, withRequestIdHeader } from "~/lib/observability"
+import { createRequestLogger } from "~/lib/server-observability"
 import { errorResult, type ApiErrorResponse, type ApiResult, type UploadResponse } from "./contracts"
 
 interface UploadServerDeps {
@@ -85,6 +87,7 @@ const getUploadRequestContext = createServerOnlyFn(async (): Promise<UploadReque
 export async function processUpload(
     data: unknown,
     clientIp: string,
+    context: { requestId?: string } = {},
 ): Promise<ApiResult<UploadResponse | ApiErrorResponse>> {
     const {
         pathModule,
@@ -102,9 +105,16 @@ export async function processUpload(
     } = await getUploadServerDeps()
 
     initializeServerRuntime()
+    const requestId = context.requestId ?? resolveRequestId()
+    const requestLogger = createRequestLogger("/api/upload", requestId, { clientIp })
 
     const requestLimit = checkAndConsumeRequestRateLimit(clientIp)
     if (!requestLimit.allowed) {
+        requestLogger.warn({
+            limit: requestLimit.limit,
+            remaining: requestLimit.remaining,
+            resetAt: requestLimit.resetAt,
+        }, "Upload request throttled")
         return errorResult(429, "request_rate_limited", "Too many requests. Please wait a minute and try again.", {
             limit: requestLimit.limit,
             remaining: requestLimit.remaining,
@@ -150,7 +160,8 @@ export async function processUpload(
     try {
         await ensureConversionsDir()
         await fsModule.writeFile(pathModule.resolve(storedPath), buffer)
-    } catch {
+    } catch (error) {
+        requestLogger.error({ err: error }, "Failed to store uploaded file")
         return errorResult(500, "upload_write_failed", "Unable to store the uploaded file right now.")
     }
 
@@ -166,11 +177,21 @@ export async function processUpload(
             inputFileSizeBytes: buffer.byteLength,
             status: "uploaded",
         })
-    } catch {
-        await fsModule.rm(pathModule.resolve(storedPath), { force: true }).catch(() => {})
+    } catch (error) {
+        requestLogger.error({ fileId, err: error }, "Failed to store upload metadata")
+        await fsModule.rm(pathModule.resolve(storedPath), { force: true }).catch((cleanupError: unknown) => {
+            requestLogger.warn({ fileId, err: cleanupError }, "Failed to clean up uploaded file after metadata write failure")
+        })
         return errorResult(500, "upload_record_failed", "Unable to save the upload metadata right now.")
     }
 
+    requestLogger.info({
+        fileId,
+        conversionType,
+        inputFileSizeBytes: buffer.byteLength,
+        sourceFormat: conversion.sourceFormat,
+        targetFormat: conversion.targetFormat,
+    }, "Stored upload and created conversion record")
     return {
         status: 200,
         body: {
@@ -183,8 +204,9 @@ export async function processUpload(
 export async function handleUploadHttpRequest(request: Request, peerIp?: string): Promise<Response> {
     const { resolveClientIpFromRequest } = await getUploadRequestContext()
 
-    const result = await processUpload(await request.formData(), resolveClientIpFromRequest(request, peerIp))
-    return Response.json(result.body, { status: result.status })
+    const requestId = resolveRequestId(request)
+    const result = await processUpload(await request.formData(), resolveClientIpFromRequest(request, peerIp), { requestId })
+    return Response.json(result.body, { status: result.status, headers: withRequestIdHeader(requestId) })
 }
 
 export const uploadFile = createServerFn({ method: "POST" }).handler(async ({ data }) => {

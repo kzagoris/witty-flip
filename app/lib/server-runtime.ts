@@ -8,7 +8,7 @@ let cronTask: { stop: () => void } | null = null
 let sigTermHandler: (() => void) | null = null
 
 async function recoverStaleJobs(): Promise<void> {
-  const { eq, inArray } = await import('drizzle-orm')
+  const { inArray } = await import('drizzle-orm')
   const { db } = await import('~/lib/db')
   const { conversions } = await import('~/lib/db/schema')
   const { releaseRateLimitSlot } = await import('~/lib/rate-limit')

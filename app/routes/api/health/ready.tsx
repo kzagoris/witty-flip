@@ -1,6 +1,9 @@
 import { createFileRoute } from "@tanstack/react-router"
+import { resolveRequestId, withRequestIdHeader } from "~/lib/observability"
 
-export async function handleReadinessRequest(): Promise<Response> {
+export async function handleReadinessRequest(request?: Request): Promise<Response> {
+    const requestId = resolveRequestId(request)
+    const headers = withRequestIdHeader(requestId, { "Cache-Control": "no-store" })
     const startTime = performance.now()
 
     try {
@@ -15,10 +18,16 @@ export async function handleReadinessRequest(): Promise<Response> {
                 uptime: Math.floor(process.uptime()),
                 timestamp: new Date().toISOString(),
                 dbLatencyMs,
+                checks: {
+                    database: {
+                        status: "ok",
+                        latencyMs: dbLatencyMs,
+                    },
+                },
             },
             {
                 status: 200,
-                headers: { "Cache-Control": "no-store" },
+                headers,
             },
         )
     } catch {
@@ -27,10 +36,16 @@ export async function handleReadinessRequest(): Promise<Response> {
                 status: "degraded",
                 uptime: Math.floor(process.uptime()),
                 timestamp: new Date().toISOString(),
+                checks: {
+                    database: {
+                        status: "down",
+                        errorCode: "database_unavailable",
+                    },
+                },
             },
             {
                 status: 503,
-                headers: { "Cache-Control": "no-store" },
+                headers,
             },
         )
     }
@@ -39,7 +54,7 @@ export async function handleReadinessRequest(): Promise<Response> {
 export const Route = createFileRoute("/api/health/ready")({
     server: {
         handlers: {
-            GET: () => handleReadinessRequest(),
+            GET: ({ request }) => handleReadinessRequest(request),
         },
     },
 })

@@ -37,6 +37,7 @@ scp bin/Release/net9.0/linux-x64/publish/alert-check user@vps:/opt/wittyflip/
 
 - **app_down**: Health endpoint returns non-200 or is unreachable
 - **disk_high**: Disk usage > 80%
+- **metrics_partial**: Metrics endpoint responded but a subsystem reported unavailable data
 - **queue_backlog**: More than 20 queued jobs
 - **error_rate_high**: Success rate < 75% in last hour (when conversions > 0)
 - **no_recent_success**: No successful conversion in 30+ minutes
