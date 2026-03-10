@@ -8,6 +8,10 @@ import { spawnWithSignal } from '~/lib/converters/spawn-helper'
 import { buildErrorResult } from '~/lib/converters/converter-run'
 import { sanitizeToolError } from '~/lib/converters/sanitize-error'
 
+export function getLibreOfficeCommand(platform = process.platform): string {
+  return platform === 'win32' ? 'soffice' : 'libreoffice'
+}
+
 export const libreofficeConverter: Converter = {
   async convert(inputPath, outputPath, signal): Promise<ConvertResult> {
     const start = Date.now()
@@ -26,8 +30,9 @@ export const libreofficeConverter: Converter = {
     }
 
     try {
+      const libreofficeCommand = getLibreOfficeCommand()
       const result = await spawnWithSignal(
-        'libreoffice',
+        libreofficeCommand,
         [
           '--headless',
           '--convert-to', outputFormat,

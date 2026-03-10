@@ -8,6 +8,7 @@ services:
     environment:
       - STRIPE_SECRET_KEY=${STRIPE_SECRET_KEY}
       - STRIPE_WEBHOOK_SECRET=${STRIPE_WEBHOOK_SECRET}
+      - METRICS_API_KEY=${METRICS_API_KEY}
       - NODE_ENV=production
     restart: unless-stopped
 

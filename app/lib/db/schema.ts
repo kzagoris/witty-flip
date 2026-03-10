@@ -35,6 +35,7 @@ export const conversions = sqliteTable('conversions', {
   ipAddress: text('ip_address').notNull(),
   inputFilePath: text('input_file_path').notNull(),
   inputFileSizeBytes: integer('input_file_size_bytes'),
+  outputFilePath: text('output_file_path'),
   outputFileSizeBytes: integer('output_file_size_bytes'),
   rateLimitDate: text('rate_limit_date'),
   toolName: text('tool_name'),

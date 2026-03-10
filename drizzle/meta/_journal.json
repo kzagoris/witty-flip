@@ -15,6 +15,13 @@
       "when": 1773001315703,
       "tag": "0001_petite_luckman",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "6",
+      "when": 1773117643597,
+      "tag": "0002_minor_the_spike",
+      "breakpoints": true
     }
   ]
 }

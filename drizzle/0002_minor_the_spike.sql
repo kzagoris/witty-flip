@@ -1,0 +1,1 @@
+ALTER TABLE `conversions` ADD `output_file_path` text;

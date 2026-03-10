@@ -1,5 +1,6 @@
 import path from 'node:path'
 import fs from 'node:fs/promises'
+import { getConversionBySlug } from '~/lib/conversions'
 
 export const CONVERSIONS_DIR = path.resolve('data', 'conversions')
 
@@ -21,4 +22,14 @@ export function getStoredOutputPath(fileId: string, targetExtension: string): st
 
 export async function ensureConversionsDir(): Promise<void> {
   await fs.mkdir(CONVERSIONS_DIR, { recursive: true })
+}
+
+export function resolveOutputPath(
+  fileId: string,
+  conversionType: string,
+  storedOutputFilePath: string | null,
+): string | null {
+  if (storedOutputFilePath) return storedOutputFilePath
+  const meta = getConversionBySlug(conversionType)
+  return meta ? getStoredOutputPath(fileId, meta.targetExtension) : null
 }

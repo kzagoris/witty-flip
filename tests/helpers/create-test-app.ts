@@ -67,6 +67,9 @@ export async function createTestApp(): Promise<TestApp> {
     downloadModule,
     webhookModule,
     healthModule,
+    readinessModule,
+    metricsModule,
+    sitemapModule,
   ] = await Promise.all([
     import('~/server/api/upload'),
     import('~/server/api/convert'),
@@ -76,6 +79,9 @@ export async function createTestApp(): Promise<TestApp> {
     import('~/routes/api/download/$fileId'),
     import('~/routes/api/webhook/stripe'),
     import('~/routes/api/health'),
+    import('~/routes/api/health/ready'),
+    import('~/routes/api/metrics'),
+    import('~/routes/api/sitemap[.]xml'),
   ])
 
   const server = http.createServer((req, res) => {
@@ -104,6 +110,12 @@ export async function createTestApp(): Promise<TestApp> {
         response = await webhookModule.handleStripeWebhookRequest(request)
       } else if (req.method === 'GET' && pathname === '/api/health') {
         response = healthModule.handleHealthRequest()
+      } else if (req.method === 'GET' && pathname === '/api/health/ready') {
+        response = await readinessModule.handleReadinessRequest()
+      } else if (req.method === 'GET' && pathname === '/api/metrics') {
+        response = await metricsModule.handleMetricsRequest(request)
+      } else if (req.method === 'GET' && pathname === '/api/sitemap.xml') {
+        response = await sitemapModule.handleSitemapRequest()
       } else {
         response = Response.json({ error: 'not_found', message: 'Not found.' }, { status: 404 })
       }

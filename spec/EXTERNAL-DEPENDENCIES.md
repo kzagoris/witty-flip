@@ -244,7 +244,7 @@ winget install TheDocumentFoundation.LibreOffice
 
 With winget, you may need to add LibreOffice to PATH manually (typically `C:\Program Files\LibreOffice\program\`).
 
-Verify: `libreoffice --version`
+Verify: `soffice --version`
 
 ### Ubuntu
 
@@ -266,6 +266,8 @@ ebook-convert --version
 pdflatex --version
 libreoffice --version
 ```
+
+On Windows, use `soffice --version` for LibreOffice.
 
 ## Windows — Install Everything at Once
 

@@ -88,6 +88,7 @@ export async function setupTestDb(_sandbox: TestSandbox) {
       ip_address TEXT NOT NULL,
       input_file_path TEXT NOT NULL,
       input_file_size_bytes INTEGER,
+      output_file_path TEXT,
       output_file_size_bytes INTEGER,
       rate_limit_date TEXT,
       tool_name TEXT,

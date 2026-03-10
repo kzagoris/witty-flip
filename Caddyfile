@@ -1,3 +1,16 @@
 wittyflip.com {
+    header {
+        Strict-Transport-Security "max-age=63072000; includeSubDomains"
+        X-Frame-Options "DENY"
+        X-Content-Type-Options "nosniff"
+        Referrer-Policy "strict-origin-when-cross-origin"
+        Content-Security-Policy "default-src 'self'; script-src 'self' 'unsafe-inline' https://js.stripe.com; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com; img-src 'self' data:; connect-src 'self' https://api.stripe.com; frame-src https://js.stripe.com; frame-ancestors 'none'"
+        -Server
+    }
+
+    request_body {
+        max_size 11MB
+    }
+
     reverse_proxy app:3000
 }

@@ -20,6 +20,7 @@ const OUTPUT = '/data/output.docx'
 
 describe('libreoffice converter', () => {
   let libreofficeConverter: typeof import('~/lib/converters/libreoffice').libreofficeConverter
+  let getLibreOfficeCommand: typeof import('~/lib/converters/libreoffice').getLibreOfficeCommand
   let spawnWithSignal: ReturnType<typeof vi.fn>
   let fsMock: {
     rename: ReturnType<typeof vi.fn>
@@ -42,11 +43,22 @@ describe('libreoffice converter', () => {
 
     const mod = await import('~/lib/converters/libreoffice')
     libreofficeConverter = mod.libreofficeConverter
+    getLibreOfficeCommand = mod.getLibreOfficeCommand
+  })
+
+  it('uses soffice on Windows', () => {
+    expect(getLibreOfficeCommand('win32')).toBe('soffice')
+  })
+
+  it('uses libreoffice on non-Windows platforms', () => {
+    expect(getLibreOfficeCommand('linux')).toBe('libreoffice')
+    expect(getLibreOfficeCommand('darwin')).toBe('libreoffice')
   })
 
   it('passes --headless, --convert-to docx, and --outdir', async () => {
     spawnWithSignal.mockResolvedValue({ exitCode: 0, stdout: '', stderr: '' } satisfies SpawnResult)
     await libreofficeConverter.convert(INPUT, OUTPUT, AbortSignal.timeout(5_000))
+    expect(spawnWithSignal.mock.calls[0][0]).toBe(getLibreOfficeCommand())
     const args = spawnWithSignal.mock.calls[0][1] as string[]
     expect(args).toContain('--headless')
     expect(args).toContain('--convert-to')

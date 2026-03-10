@@ -1,6 +1,5 @@
 import fs from "node:fs/promises"
-import { getStoredOutputPath } from "~/lib/conversion-files"
-import { getConversionBySlug } from "~/lib/conversions"
+import { resolveOutputPath } from "~/lib/conversion-files"
 import { statusToProgress, type ConversionStatusResponse } from "./contracts"
 
 interface ConversionStatusRecord {
@@ -9,6 +8,7 @@ interface ConversionStatusRecord {
     expiresAt: string | null
     conversionType: string
     errorMessage: string | null
+    outputFilePath: string | null
     [key: string]: unknown
 }
 
@@ -40,8 +40,9 @@ export async function buildConversionStatusPayload(
     }
 
     if (conversion.status === "completed") {
-        const conversionMeta = getConversionBySlug(conversion.conversionType)
-        if (!conversionMeta) {
+        const outputPath = resolveOutputPath(conversion.id, conversion.conversionType, conversion.outputFilePath)
+
+        if (!outputPath) {
             return {
                 fileId: conversion.id,
                 status: "failed",
@@ -52,7 +53,7 @@ export async function buildConversionStatusPayload(
         }
 
         try {
-            await fs.access(getStoredOutputPath(conversion.id, conversionMeta.targetExtension))
+            await fs.access(outputPath)
             return {
                 fileId: conversion.id,
                 status: "completed",

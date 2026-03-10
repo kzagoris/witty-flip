@@ -160,7 +160,8 @@ export async function handleDownloadRequest(fileId: string, clientIp?: string): 
         return Response.json(result.body, { status: result.status })
     }
 
-    const outputPath = getStoredOutputPath(fileId, conversionMeta.targetExtension)
+    const outputPath = conversion.outputFilePath
+        ?? getStoredOutputPath(fileId, conversionMeta.targetExtension)
 
     let handle: import("node:fs/promises").FileHandle
     try {

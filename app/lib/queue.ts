@@ -9,7 +9,7 @@ import { getStoredInputPath, getStoredOutputPath } from '~/lib/conversion-files'
 
 export { CONVERSIONS_DIR } from '~/lib/conversion-files'
 
-const MAX_CONCURRENT_JOBS = 5
+export const MAX_CONCURRENT_JOBS = 5
 const CONVERSION_TIMEOUT_MS = 30_000
 const DOWNLOAD_WINDOW_MS = 60 * 60 * 1000
 
@@ -174,6 +174,7 @@ async function runConversion(job: typeof conversions.$inferSelect): Promise<void
           .update(conversions)
           .set({
             status: 'completed',
+            outputFilePath: resultOutputPath,
             expiresAt: new Date(Date.now() + DOWNLOAD_WINDOW_MS).toISOString(),
             toolName: conversionMeta.toolName,
             toolExitCode: result.exitCode,
