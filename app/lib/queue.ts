@@ -12,7 +12,7 @@ import { getStoredInputPath, getStoredOutputPath } from '~/lib/conversion-files'
 export { CONVERSIONS_DIR } from '~/lib/conversion-files'
 
 export const MAX_CONCURRENT_JOBS = 5
-export const CONVERSION_TIMEOUT_MS = 30_000
+export const CONVERSION_TIMEOUT_MS = 5 * 60_000
 const DOWNLOAD_WINDOW_MS = 60 * 60 * 1000
 
 let isProcessing = false

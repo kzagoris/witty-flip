@@ -384,11 +384,11 @@ describe('runConversion — timeout path', () => {
 
     await enqueueJob(id)
 
-    // Advance fake time by 30 s.  vi.advanceTimersByTimeAsync processes pending
+    // Advance fake time by 5 min.  vi.advanceTimersByTimeAsync processes pending
     // Promises (including libsql queries) between ticks, so the full async chain
     // — enqueueJob → processQueue → runConversion → setTimeout registration —
-    // completes before the 30 s timer fires.
-    await vi.advanceTimersByTimeAsync(30_000)
+    // completes before the 5 min timer fires.
+    await vi.advanceTimersByTimeAsync(5 * 60_000)
 
     vi.useRealTimers()
 
