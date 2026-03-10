@@ -19,6 +19,13 @@ export function Header() {
           <span className="font-heading text-xl font-bold text-primary">WittyFlip</span>
         </Link>
 
+        <nav className="flex items-center gap-1">
+        <Link to="/blog">
+          <Button variant="ghost" size="sm">
+            Blog
+          </Button>
+        </Link>
+
         <DropdownMenu>
           <DropdownMenuTrigger asChild>
             <Button variant="ghost" size="sm" className="gap-1">
@@ -40,6 +47,7 @@ export function Header() {
             ))}
           </DropdownMenuContent>
         </DropdownMenu>
+        </nav>
       </div>
     </header>
   )
