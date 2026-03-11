@@ -32,6 +32,22 @@ describe('converter registry', () => {
     expect(getConverter('unknown-tool')).toBeUndefined()
     expect(getConverter('')).toBeUndefined()
   })
+
+  it('registerIfAbsent does not overwrite an existing registration', async () => {
+    const { registerConverter, registerIfAbsent, getConverter } = await import('~/lib/converters/index')
+    const original = makeMockConverter()
+    const replacement = makeMockConverter()
+    registerConverter('pandoc', original)
+    registerIfAbsent('pandoc', replacement)
+    expect(getConverter('pandoc')).toBe(original)
+  })
+
+  it('registerIfAbsent registers when the key is absent', async () => {
+    const { registerIfAbsent, getConverter } = await import('~/lib/converters/index')
+    const converter = makeMockConverter()
+    registerIfAbsent('new-tool', converter)
+    expect(getConverter('new-tool')).toBe(converter)
+  })
 })
 
 describe('registerAllConverters', () => {
@@ -63,5 +79,16 @@ describe('registerAllConverters', () => {
     const second = getConverter('pandoc')
 
     expect(first).toBe(second)
+  })
+
+  it('does not overwrite a converter registered before registerAllConverters is called', async () => {
+    const { registerConverter, getConverter } = await import('~/lib/converters/index')
+    const { registerAllConverters } = await import('~/lib/converters/register-all')
+    const mock = makeMockConverter()
+
+    registerConverter('pandoc', mock)
+    registerAllConverters()
+
+    expect(getConverter('pandoc')).toBe(mock)
   })
 })
