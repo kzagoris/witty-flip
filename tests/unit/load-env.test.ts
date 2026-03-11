@@ -1,5 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import fs from 'node:fs/promises'
 import path from 'node:path'
+import { build } from 'vite'
+import { registerTempRoot } from '../setup'
 
 describe('loadEnvFiles', () => {
   const originalEnv = { ...process.env }
@@ -49,5 +52,41 @@ describe('loadEnvFiles', () => {
     loadEnvFiles({ force: true })
 
     expect(process.env.METRICS_API_KEY).toBe('preexisting-value')
+  })
+
+  it('stays browser-compatible when bundled by Vite', async () => {
+    const tempDir = await fs.mkdtemp(path.join(process.cwd(), '.tmp-load-env-'))
+    registerTempRoot(tempDir)
+
+    const entryPath = path.join(tempDir, 'entry.ts')
+    const loadEnvPath = path.resolve(process.cwd(), 'app/lib/load-env.ts')
+    const importPath = path.relative(tempDir, loadEnvPath).replace(/\\/g, '/')
+
+    await fs.writeFile(entryPath, `import ${JSON.stringify(importPath)}\n`)
+
+    const buildResult = await build({
+      configFile: false,
+      logLevel: 'silent',
+      root: tempDir,
+      build: {
+        minify: false,
+        target: 'esnext',
+        write: false,
+        rollupOptions: {
+          input: entryPath,
+        },
+      },
+    })
+
+    const outputs = Array.isArray(buildResult) ? buildResult : [buildResult]
+    const bundledCode = outputs
+      .flatMap((output) => ('output' in output ? output.output : []))
+      .filter((chunk) => chunk.type === 'chunk')
+      .map((chunk) => chunk.code)
+      .join('\n')
+
+    expect(bundledCode).not.toContain('__vite-browser-external')
+    expect(bundledCode).not.toContain('node:url')
+    expect(bundledCode).not.toContain('node:path')
   })
 })
