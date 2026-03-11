@@ -1,5 +1,3 @@
-import fs from "node:fs"
-import path from "node:path"
 import matter from "gray-matter"
 import { marked } from "marked"
 import '~/lib/load-env'
@@ -8,6 +6,12 @@ import { getConversionBySlug } from "~/lib/conversions"
 
 const log = createChildLogger({ module: "blog" })
 const BLOG_SLUG_PATTERN = /^[a-z0-9]+(?:-[a-z0-9]+)*$/
+
+type FsModule = typeof import("node:fs")
+type PathModule = typeof import("node:path")
+
+let nodeFsModule: FsModule | undefined
+let nodePathModule: PathModule | undefined
 
 export interface BlogPost {
   slug: string
@@ -29,8 +33,53 @@ export interface BlogPostSummary {
   relatedConversion: string
 }
 
+function getNodeFsModule(): FsModule {
+  if (nodeFsModule) {
+    return nodeFsModule
+  }
+
+  if (typeof process === "undefined" || typeof process.getBuiltinModule !== "function") {
+    throw new Error("Blog filesystem helpers are only available in the server runtime.")
+  }
+
+  const fsModule = process.getBuiltinModule("fs")
+
+  if (!fsModule) {
+    throw new Error("The Node fs module is unavailable in this runtime.")
+  }
+
+  nodeFsModule = fsModule as FsModule
+  return nodeFsModule
+}
+
+function getNodePathModule(): PathModule {
+  if (nodePathModule) {
+    return nodePathModule
+  }
+
+  if (typeof process === "undefined" || typeof process.getBuiltinModule !== "function") {
+    throw new Error("Blog path helpers are only available in the server runtime.")
+  }
+
+  const pathModule = process.getBuiltinModule("path")
+
+  if (!pathModule) {
+    throw new Error("The Node path module is unavailable in this runtime.")
+  }
+
+  nodePathModule = pathModule as PathModule
+  return nodePathModule
+}
+
 function getBlogDir(): string {
-  return process.env["BLOG_CONTENT_DIR"] ?? path.join(process.cwd(), "content", "blog")
+  const configuredBlogDir = process.env["BLOG_CONTENT_DIR"]
+
+  if (configuredBlogDir) {
+    return configuredBlogDir
+  }
+
+  const path = getNodePathModule()
+  return path.join(process.cwd(), "content", "blog")
 }
 
 const REQUIRED_FIELDS = ["title", "description", "date", "slug", "relatedConversion"] as const
@@ -99,6 +148,8 @@ export function readBlogPost(slug: string): BlogPost | null {
     return null
   }
 
+  const fs = getNodeFsModule()
+  const path = getNodePathModule()
   const filepath = path.join(getBlogDir(), `${slug}.md`)
 
   if (!fs.existsSync(filepath)) {
@@ -130,6 +181,7 @@ export function readBlogPost(slug: string): BlogPost | null {
 
 export function readAllBlogPosts(): BlogPostSummary[] {
   const blogDir = getBlogDir()
+  const fs = getNodeFsModule()
 
   if (!fs.existsSync(blogDir)) {
     return []

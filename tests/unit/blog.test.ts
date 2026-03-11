@@ -2,6 +2,8 @@ import { describe, it, expect, beforeAll, afterAll, beforeEach, afterEach, vi } 
 import fs from "node:fs"
 import path from "node:path"
 import os from "node:os"
+import { build } from "vite"
+import { registerTempRoot } from "../setup"
 
 let tempDir: string
 let blogDir: string
@@ -194,6 +196,49 @@ Content.
       const post = readBlogPost("valid-post")
       expect(post).not.toBeNull()
       expect(post!.readingTimeMin).toBe(1)
+    })
+  })
+
+  describe("browser bundling", () => {
+    it("does not externalize node:fs or node:path when bundled by Vite", async () => {
+      const bundleDir = fs.mkdtempSync(path.join(os.tmpdir(), "blog-bundle-test-"))
+      registerTempRoot(bundleDir)
+
+      const entryPath = path.join(bundleDir, "entry.ts")
+      const blogModulePath = path.resolve(process.cwd(), "app/lib/blog.ts")
+      const importPath = path.relative(bundleDir, blogModulePath).replace(/\\/g, "/")
+
+      fs.writeFileSync(entryPath, `import ${JSON.stringify(importPath)}\n`, "utf-8")
+
+      const buildResult = await build({
+        configFile: false,
+        logLevel: "silent",
+        root: bundleDir,
+        resolve: {
+          alias: {
+            "~": path.resolve(process.cwd(), "app"),
+          },
+        },
+        build: {
+          minify: false,
+          target: "esnext",
+          write: false,
+          rollupOptions: {
+            input: entryPath,
+          },
+        },
+      })
+
+      const outputs = Array.isArray(buildResult) ? buildResult : [buildResult]
+      const bundledCode = outputs
+        .flatMap((output) => ("output" in output ? output.output : []))
+        .filter((chunk) => chunk.type === "chunk")
+        .map((chunk) => chunk.code)
+        .join("\n")
+
+      expect(bundledCode).not.toContain("__vite-browser-external")
+      expect(bundledCode).not.toContain("node:fs")
+      expect(bundledCode).not.toContain("node:path")
     })
   })
 })
