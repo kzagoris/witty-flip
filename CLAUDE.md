@@ -136,6 +136,73 @@ Six converters in `app/lib/converters/`, each using shared infrastructure:
 - **Smoke tests** (`tests/smoke/tooling-smoke.test.ts`): end-to-end converter tests against real tools (pandoc, LibreOffice, etc.), skipped by default, run via `scripts/run-tooling-smoke-tests.mjs`
 - **Helpers:** `tests/helpers/create-test-app.ts` (HTTP harness via supertest), `tests/helpers/test-env.ts` (sandbox isolation, temp dirs, DB reset)
 
+### Test Patterns
+
+**Standard unit test setup:**
+
+```typescript
+import { describe, it, expect, beforeEach, vi } from 'vitest'
+import { createTestSandbox, setupTestDb } from '../helpers/test-env'
+
+let sandbox, db, schema
+
+beforeEach(async () => {
+  vi.resetModules()                          // Fresh module singletons
+  sandbox = createTestSandbox()              // Temp dir + DATABASE_URL + chdir
+  const setup = await setupTestDb(sandbox)   // Create tables + triggers
+  db = setup.db; schema = setup.schema
+  // Dynamic imports AFTER sandbox is ready:
+  const mod = await import('~/lib/my-module')
+})
+```
+
+**Integration tests** add `createTestApp()` for HTTP testing via supertest, plus `initializeServerRuntime()` / `shutdownServerRuntime()` lifecycle.
+
+**Key conventions:**
+
+- `vi.resetModules()` always first in `beforeEach` (ensures fresh singletons)
+- Dynamic `await import()` after sandbox setup (DATABASE_URL must be set first)
+- `vi.hoisted()` + `vi.mock()` for external deps (Stripe, spawn-helper)
+- `fileParallelism: false` in vitest config — tests run sequentially
+- Helper functions (`seed()`, `waitForStatus()`, `getJob()`) defined at suite level
+
+### Conversion Status State Machine
+
+```mermaid
+stateDiagram-v2
+    [*] --> uploaded : POST /api/upload
+
+    uploaded --> queued : Free quota OK (convert.ts)
+    uploaded --> payment_required : Free quota exhausted (convert.ts)
+
+    payment_required --> pending_payment : Stripe session created (stripe.ts)
+
+    pending_payment --> queued : Payment completed (webhook or reconciliation)
+    pending_payment --> payment_required : All Stripe sessions expired (reconciliation)
+    pending_payment --> expired : Stale >2hr (cleanup.ts)
+
+    queued --> converting : Atomic claim (queue.ts)
+    queued --> failed : Crash recovery on startup (server-runtime.ts)
+
+    converting --> completed : Converter success + output >0 bytes
+    converting --> failed : Converter error, 0-byte output, or exception
+    converting --> timeout : 5-min AbortSignal fired
+    converting --> failed : Crash recovery on startup (server-runtime.ts)
+
+    completed --> expired : 1hr download window elapsed (cleanup.ts)
+```
+
+**Key rules:** Failed conversions don't consume free quota (slot released). Duplicate webhooks are idempotent. `reconcilePendingPayment()` runs during status polling to catch missed webhooks.
+
+### Server Functions vs File-Based Routes
+
+| Aspect | Server Functions (`app/server/api/`) | File-Based Routes (`app/routes/api/`) |
+|--------|--------------------------------------|---------------------------------------|
+| API | `createServerFn()` | `createFileRoute()` with `handlers` |
+| Called by | Client code via `callServerFn()` | External systems (webhooks, crawlers, monitoring) |
+| Response | Return data + `setResponseStatus()` | Return `new Response(...)` directly |
+| Use for | Upload, convert, status polling, blog loaders | Downloads (streaming), Stripe webhook, health, metrics, sitemap |
+
 ### Key Modules
 
 | Module                 | File                            | Notes                                                |
