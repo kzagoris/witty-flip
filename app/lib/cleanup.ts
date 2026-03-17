@@ -1,8 +1,9 @@
 import fs from 'node:fs/promises'
 import { eq, and, sql, inArray } from 'drizzle-orm'
 import { db } from '~/lib/db'
-import { conversions } from '~/lib/db/schema'
+import { clientConversionAttempts, conversions } from '~/lib/db/schema'
 import { CONVERSIONS_DIR, ensureConversionsDir, resolveOutputPath, getStoredInputPath } from '~/lib/conversion-files'
+import { releaseRateLimitSlot } from '~/lib/rate-limit'
 import { isUuid } from '~/server/api/contracts'
 import { logger } from '~/lib/logger'
 
@@ -122,6 +123,40 @@ export async function cleanupExpiredFiles(): Promise<{ cleaned: number; errors: 
         cleaned++
       } catch (err) {
         logger.error({ fileId: row.id, err }, 'Error cleaning stale pending_payment conversion')
+        errors++
+      }
+    }
+
+    // 5. Expired client conversion attempts — expire rows and release reserved free slots when needed
+    const expiredClientAttempts = await db
+      .select()
+      .from(clientConversionAttempts)
+      .where(
+        and(
+          inArray(clientConversionAttempts.status, ['reserved', 'ready', 'payment_required', 'pending_payment']),
+          sql`${clientConversionAttempts.expiresAt} <= ${now}`,
+        ),
+      )
+
+    for (const row of expiredClientAttempts) {
+      try {
+        await db.transaction(async (tx) => {
+          await tx
+            .update(clientConversionAttempts)
+            .set({
+              status: 'expired',
+              recoveryToken: null,
+            })
+            .where(eq(clientConversionAttempts.id, row.id))
+
+          if (row.status === 'reserved' && row.wasPaid === 0 && row.rateLimitDate) {
+            await releaseRateLimitSlot(row.ipAddress, row.rateLimitDate, tx)
+          }
+        })
+
+        cleaned++
+      } catch (err) {
+        logger.error({ clientAttemptId: row.id, err }, 'Error expiring stale client conversion attempt')
         errors++
       }
     }

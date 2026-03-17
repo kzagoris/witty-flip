@@ -157,4 +157,47 @@ describe('crash recovery', () => {
     expect((await getJob(id2))?.status).toBe('pending_payment')
     expect((await getJob(id3))?.status).toBe('uploaded')
   })
+
+  it('keeps startup cleanup wired through initializeServerRuntime', async () => {
+    const cleanupExpiredFiles = vi.fn().mockResolvedValue({ cleaned: 0, errors: 0 })
+    const scanOrphanFiles = vi.fn().mockResolvedValue(undefined)
+    const validateEnv = vi.fn()
+    const registerAllConverters = vi.fn()
+
+    vi.doMock('~/lib/cleanup', () => ({
+      cleanupExpiredFiles,
+      scanOrphanFiles,
+    }))
+    vi.doMock('~/lib/env', () => ({
+      validateEnv,
+    }))
+    vi.doMock('~/lib/converters/register-all', () => ({
+      registerAllConverters,
+    }))
+    vi.doMock('~/lib/logger', () => ({
+      logger: {
+        info: vi.fn(),
+        warn: vi.fn(),
+        error: vi.fn(),
+      },
+    }))
+    vi.doMock('node-cron', () => ({
+      schedule: vi.fn(() => ({
+        stop: vi.fn(),
+      })),
+    }))
+
+    const { initializeServerRuntime, shutdownServerRuntime } = await import('~/lib/server-runtime')
+
+    try {
+      initializeServerRuntime()
+
+      expect(validateEnv).toHaveBeenCalledTimes(1)
+      expect(registerAllConverters).toHaveBeenCalledTimes(1)
+      expect(cleanupExpiredFiles).toHaveBeenCalledTimes(1)
+      expect(scanOrphanFiles).toHaveBeenCalledTimes(1)
+    } finally {
+      shutdownServerRuntime()
+    }
+  })
 })

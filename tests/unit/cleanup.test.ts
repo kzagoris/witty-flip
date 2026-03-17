@@ -1,7 +1,7 @@
 import { writeFileSync, existsSync, mkdirSync, rmSync } from 'node:fs'
 import { join } from 'node:path'
 import { randomUUID } from 'node:crypto'
-import { eq } from 'drizzle-orm'
+import { eq, and } from 'drizzle-orm'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { createTestSandbox, setupTestDb } from '../helpers/test-env'
 
@@ -11,7 +11,11 @@ import type * as CleanupModule from '~/lib/cleanup'
 type DB = Awaited<ReturnType<typeof setupTestDb>>['db']
 
 let db: DB
-let schema: { conversions: typeof SchemaModule.conversions }
+let schema: {
+  conversions: typeof SchemaModule.conversions
+  clientConversionAttempts: typeof SchemaModule.clientConversionAttempts
+  rateLimits: typeof SchemaModule.rateLimits
+}
 let cleanupExpiredFiles: typeof CleanupModule.cleanupExpiredFiles
 let _resetCleanupGuard: typeof CleanupModule._resetCleanupGuard
 let CONVERSIONS_DIR: string
@@ -39,6 +43,38 @@ async function getJob(id: string) {
     .from(schema.conversions)
     .where(eq(schema.conversions.id, id))
   return row
+}
+
+async function seedClientAttempt(overrides: Record<string, unknown> = {}) {
+  const id = randomUUID()
+  await db.insert(schema.clientConversionAttempts).values({
+    id,
+    conversionType: 'test-client-png-to-jpg',
+    category: 'image',
+    ipAddress: '127.0.0.1',
+    inputMode: 'file',
+    tokenHash: 'token-hash',
+    status: 'reserved',
+    expiresAt: new Date(Date.now() + 30 * 60_000).toISOString(),
+    ...overrides,
+  } as Parameters<typeof db.insert>[0] extends { values: (v: infer V) => unknown } ? V : never)
+  return id
+}
+
+async function getClientAttempt(id: string) {
+  const [row] = await db
+    .select()
+    .from(schema.clientConversionAttempts)
+    .where(eq(schema.clientConversionAttempts.id, id))
+  return row
+}
+
+async function getReservedSlots(ip: string, date: string) {
+  const [row] = await db
+    .select()
+    .from(schema.rateLimits)
+    .where(and(eq(schema.rateLimits.ipAddress, ip), eq(schema.rateLimits.date, date)))
+  return row?.reservedFreeSlots ?? 0
 }
 
 beforeEach(async () => {
@@ -147,6 +183,76 @@ describe('cleanupExpiredFiles', () => {
 
     const row = await getJob(id)
     expect(row?.status).toBe('expired')
+  })
+
+  it('expires stale reserved client attempts, clears recovery tokens, and releases reserved free slots', async () => {
+    const today = new Date().toISOString().slice(0, 10)
+    const { reserveRateLimitSlot } = await import('~/lib/rate-limit')
+    await reserveRateLimitSlot('127.0.0.1', today)
+
+    const attemptId = await seedClientAttempt({
+      rateLimitDate: today,
+      recoveryToken: 'recovery-token',
+      expiresAt: new Date(Date.now() - 60_000).toISOString(),
+    })
+
+    expect(await getReservedSlots('127.0.0.1', today)).toBe(1)
+
+    const result = await cleanupExpiredFiles()
+
+    expect(result).toEqual({ cleaned: 1, errors: 0 })
+    expect(await getClientAttempt(attemptId)).toMatchObject({
+      id: attemptId,
+      status: 'expired',
+      recoveryToken: null,
+    })
+    expect(await getReservedSlots('127.0.0.1', today)).toBe(0)
+  })
+
+  it('expires stale ready, payment_required, and pending_payment client attempts without releasing free slots', async () => {
+    const today = new Date().toISOString().slice(0, 10)
+    const ipAddress = '127.0.0.2'
+    const { reserveRateLimitSlot } = await import('~/lib/rate-limit')
+    await reserveRateLimitSlot(ipAddress, today)
+
+    const attemptIds = await Promise.all([
+      seedClientAttempt({
+        ipAddress,
+        status: 'ready',
+        recoveryToken: 'ready-token',
+        rateLimitDate: today,
+        expiresAt: new Date(Date.now() - 60_000).toISOString(),
+      }),
+      seedClientAttempt({
+        ipAddress,
+        status: 'payment_required',
+        recoveryToken: 'payment-required-token',
+        rateLimitDate: today,
+        expiresAt: new Date(Date.now() - 60_000).toISOString(),
+      }),
+      seedClientAttempt({
+        ipAddress,
+        status: 'pending_payment',
+        recoveryToken: 'pending-payment-token',
+        rateLimitDate: today,
+        expiresAt: new Date(Date.now() - 60_000).toISOString(),
+      }),
+    ])
+
+    expect(await getReservedSlots(ipAddress, today)).toBe(1)
+
+    const result = await cleanupExpiredFiles()
+
+    expect(result).toEqual({ cleaned: 3, errors: 0 })
+    expect(await getReservedSlots(ipAddress, today)).toBe(1)
+
+    for (const attemptId of attemptIds) {
+      expect(await getClientAttempt(attemptId)).toMatchObject({
+        id: attemptId,
+        status: 'expired',
+        recoveryToken: null,
+      })
+    }
   })
 
   it('skips queued and converting statuses', async () => {
