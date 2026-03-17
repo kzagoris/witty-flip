@@ -33,17 +33,22 @@ To prevent breakage:
 
 Each batch is a separate execution session verified independently before proceeding.
 
-### 3. Token design: hashed active token + one-time recovery token + IP-gated status recovery
+### 3. Token design: hashed active token + one-time recovery token + IP-or-cookie-gated status recovery
 
 `client_conversion_attempts` gets `tokenHash TEXT` and nullable `recoveryToken TEXT`. The active mutation token is always validated via `SHA-256(token) === tokenHash`; the plaintext token is never re-derived from the hash.
 
 **Normal path:** On `/start`, generate a random UUID token, store only `tokenHash`, and return the plaintext token to the client. The client stores that plaintext token in `sessionStorage` keyed by `attemptId`, which survives same-tab refreshes and same-tab Stripe redirects.
 
-**Payment recovery path:** When payment transitions an attempt from `pending_payment` → `ready`, mint a fresh token, replace `tokenHash`, and store the plaintext token in `recoveryToken`. The `/status` endpoint may return that plaintext token exactly once to the same IP that created the attempt: read `recoveryToken`, include it in the response, and clear the column in the same transaction. If `recoveryToken` has already been claimed, `/status` returns status without a token and the UI offers a restart.
+**Payment recovery path:** When payment transitions an attempt from `pending_payment` → `ready`, mint a fresh token, replace `tokenHash`, and store the plaintext token in `recoveryToken`. The `/status` endpoint may return that plaintext token exactly once after verifying ownership (see below): read `recoveryToken`, include it in the response, and clear the column in the same transaction. If `recoveryToken` has already been claimed, `/status` returns status without a token and the UI offers a restart.
 
 **Reserved-attempt behavior:** `reserved` attempts do not replay plaintext tokens from the DB. Recovery before payment relies on `sessionStorage`; if the token is gone before payment, the user restarts the attempt.
 
-**IP ownership check:** `/status` only returns `recoveryToken` when the requesting IP matches `client_conversion_attempts.ip_address`. Without this, an attacker guessing `attemptId` could retrieve a mutation credential. Any transition out of `ready` clears any leftover `recoveryToken`.
+**Ownership verification (IP + HMAC cookie fallback):** `/status` only returns `recoveryToken` when the requester proves ownership. This uses a two-tier check:
+
+1. **Primary: IP match** — requesting IP matches `client_conversion_attempts.ip_address`. Covers the common case (same network, same session).
+2. **Fallback: HMAC recovery cookie** — on `/start`, set an `HttpOnly; Secure; SameSite=Lax` cookie named `wf_attempt_{attemptId}` containing `HMAC-SHA256(attemptId, SERVER_SECRET)`. The cookie has no `Max-Age` (session cookie — cleared when browser closes, matching the attempt lifecycle). On `/status`, if IP doesn't match, verify the cookie HMAC. This handles the edge case where Stripe checkout returns on a different IP (mobile carrier NAT, VPN reconnection, corporate proxy rotation).
+
+Without either proof, an attacker guessing `attemptId` cannot retrieve a mutation credential. Any transition out of `ready` clears any leftover `recoveryToken`. The `SERVER_SECRET` for HMAC is derived from the existing `STRIPE_SECRET_KEY` (or a dedicated `RECOVERY_COOKIE_SECRET` env var if one is set) — no new secret management is needed.
 
 **Idempotency guards:**
 - `/complete`: If attempt is already `completed`, return success without re-consuming quota (check status in SQL WHERE clause)
@@ -84,7 +89,16 @@ The existing URL search params and route state are `fileId`-shaped. Client-side 
 
 ### 5. Schema semantics for mixed server/client payments and events
 
-**Payments table:** Add `clientAttemptId TEXT` column. Keep existing `fileId` column for server-side. App-level enforcement: exactly one of `fileId` or `clientAttemptId` per row. No rename of existing column (avoids breaking migration).
+**Payments table:** Make `fileId` **nullable** (migration: `ALTER TABLE payments ADD COLUMN file_id_new TEXT; UPDATE payments SET file_id_new = file_id;` then recreate table — or use Drizzle's migration generator). Add `clientAttemptId TEXT` (nullable). Add a SQLite `CHECK` constraint enforcing exactly one is set:
+```sql
+CHECK (
+  (file_id IS NOT NULL AND client_attempt_id IS NULL) OR
+  (file_id IS NULL AND client_attempt_id IS NOT NULL)
+)
+```
+This replaces the previous app-level-only enforcement with a DB-level guarantee. No rename of existing column (avoids breaking migration).
+
+**Payment triggers update:** Existing payment triggers use `NEW.file_id` to write to `conversion_events`. Update them to use `COALESCE(NEW.file_id, NEW.client_attempt_id)` as the event reference key. This one-line change per trigger keeps the audit trail working for both server and client payments.
 
 > **Deliberate spec deviation:** The spec (`SPEC-reach-expansion.md`) suggests migrating `fileId` → `conversionId` in the payments table. We intentionally keep `fileId` and add `clientAttemptId` instead to avoid a risky rename migration on a live table. The spec's intent (linking payments to either server or client conversions) is achieved without the rename.
 
@@ -184,7 +198,7 @@ completed_at TEXT
 expires_at TEXT NOT NULL            -- 30 minutes from creation
 ```
 
-**Payments update:** Add `clientAttemptId TEXT` (nullable).
+**Payments update:** Make `fileId` nullable. Add `clientAttemptId TEXT` (nullable). Add `CHECK` constraint: exactly one of `fileId` / `clientAttemptId` is non-null. Update existing payment triggers to use `COALESCE(NEW.file_id, NEW.client_attempt_id)` as the `conversion_events.file_id` reference key.
 
 **Conversions update:** Add `category TEXT DEFAULT 'document'`.
 
@@ -192,7 +206,7 @@ expires_at TEXT NOT NULL            -- 30 minutes from creation
 
 **New triggers:** INSERT + UPDATE OF status on `client_conversion_attempts` → `conversion_events` with `eventSource = 'client'`.
 
-**Tests:** New `tests/unit/client-conversion-attempts.test.ts` — basic insert, status transitions, trigger events.
+**Tests:** New `tests/unit/client-conversion-attempts.test.ts` — basic insert, status transitions, trigger events. Update payment trigger tests to verify `COALESCE` behavior: a payment with only `clientAttemptId` writes the attempt ID (not null) into `conversion_events.file_id`. Verify CHECK constraint rejects rows where both or neither of `fileId`/`clientAttemptId` are set.
 
 ### Step A3 — Client-side converter registry + Canvas converter
 
@@ -239,13 +253,14 @@ Each endpoint follows the 3-layer pattern from `app/server/api/convert.ts`.
   - Store `SHA-256(token)` as `tokenHash` (no `recoveryToken` on free start)
   - Use `db.transaction(async (tx) => { ... })` so `reserveRateLimitSlot(ip, date, tx)` and attempt insert succeed or roll back together
   - If allowed: insert with `status: 'reserved'`, `expiresAt: now + 30min`; if not: insert with `status: 'payment_required'`
+  - **Set HMAC recovery cookie:** `wf_attempt_{attemptId}` = `HMAC-SHA256(attemptId, SERVER_SECRET)`, `HttpOnly; Secure; SameSite=Lax`, session lifetime (no `Max-Age`)
   - Return `{ allowed, attemptId, token, remainingFreeAfterReservation }` or `{ allowed: false, attemptId, requiresPayment: true }`
 
 - `app/server/api/client-conversion-status.ts`
   - Lookup by attemptId
   - If `pending_payment`: call `reconcileClientPendingPayment(attemptId)` (new function in stripe.ts)
-  - **IP ownership check:** only return a recovery token when requesting IP matches `attempt.ipAddress`
-  - If `status === 'ready'` and `recoveryToken` is present: return it exactly once and clear `recoveryToken` in the same transaction
+  - **Ownership check (IP + cookie fallback):** return a recovery token only when (a) requesting IP matches `attempt.ipAddress`, OR (b) the `wf_attempt_{attemptId}` cookie contains a valid HMAC for this attemptId. Without either, return status without token.
+  - If `status === 'ready'` and `recoveryToken` is present and ownership verified: return it exactly once and clear `recoveryToken` in the same transaction
   - `reserved` attempts never replay the original plaintext token from the DB; same-tab refresh relies on `sessionStorage`
   - Return status payload; token included only when a one-time `recoveryToken` is successfully claimed
 
@@ -267,7 +282,8 @@ Each endpoint follows the 3-layer pattern from `app/server/api/convert.ts`.
 **Modify:**
 - `app/server/api/contracts.ts` — Add types: `ClientConversionStartResponse`, `ClientConversionStatusResponse`, `ClientConversionCompleteResponse`, `ClientConversionFailResponse`, `ClientAttemptStatus` type union. Add `CheckoutRequest = { fileId: string } | { attemptId: string }`.
 - `app/server/api/create-checkout.ts` — Accept `{ fileId } | { attemptId }`. Dispatch to existing `createCheckoutSession(fileId)` or new `createClientCheckoutSession(attemptId)`.
-- `app/lib/stripe.ts` — Add `createClientCheckoutSession(attemptId)`: looks up `client_conversion_attempts`, creates Stripe session with `{ attemptId }` in metadata. Checkout success URL: `/${conversionType}?attemptId=X&session_id=Y`. Add `reconcileClientPendingPayment(attemptId)`. Update `handleCheckoutCompleted` to check metadata for `attemptId` and, on payment success: mint a fresh token, replace `tokenHash`, store the plaintext in `recoveryToken`, set status to `ready`. The client retrieves that token exactly once via the IP-gated `/status` endpoint.
+- `app/lib/stripe.ts` — Add `createClientCheckoutSession(attemptId)`: looks up `client_conversion_attempts`, creates Stripe session with `{ attemptId }` in metadata. Checkout success URL: `/${conversionType}?attemptId=X&session_id=Y`. Add `reconcileClientPendingPayment(attemptId)`. Update `handleCheckoutCompleted` to check metadata for `attemptId` and, on payment success: mint a fresh token, replace `tokenHash`, store the plaintext in `recoveryToken`, set status to `ready`. The client retrieves that token exactly once via the `/status` endpoint (see recovery cookie below).
+- `app/lib/request-rate-limit.ts` — Add rate-limit tier for client conversion endpoints (10 req/min for start/complete/fail, 20 req/min for status). **Moved from C3** — these endpoints are callable after Batch A deployment and must not ship without request throttling.
 - `tests/helpers/create-test-app.ts` — Register 4 new endpoint routes.
 
 **Tests:**
@@ -311,6 +327,8 @@ New hooks and components. Still no new entries in the conversion registry, so no
 
 **Recovery:** Store the plaintext token in `sessionStorage` after `/start`. If `attemptId` is present in search params on mount (Stripe return), restore state by polling the status endpoint; when a one-time recovery token is returned, persist it to `sessionStorage` before continuing. If status is `ready` but no token is available, surface a restart action.
 
+**File reselection after refresh/payment:** `sessionStorage` preserves the token but not the in-memory `File` object. After a hard refresh or Stripe return, the browser has no file to convert. When recovery succeeds (status is `ready` and token is obtained) but no `File` is in memory, show a clear prompt: "Payment confirmed! Please reselect your file to complete the conversion." The `FileUploader` is re-rendered in this state, and on file selection the conversion proceeds immediately using the recovered token. This keeps the UX honest — no file persistence, no IndexedDB complexity — and aligns with the privacy story (files are never stored).
+
 ### Step B2 — Client-side conversion components
 
 **New files:**
@@ -328,6 +346,7 @@ New hooks and components. Still no new entries in the conversion registry, so no
   processingMode === "client" → <ClientConversionPage>
   processingMode === "server" → <ServerConversionPage> (extracted existing code)
   ```
+  **Complete the `head` metadata** (currently missing from `$conversionType.tsx:48`): add self-referencing `<link rel="canonical">`, `og:url`, `twitter:card` (`summary`), `twitter:title`, `twitter:description`. These are required by the spec (`SPEC-reach-expansion.md:679`) and apply to both server and client pages.
 - `app/lib/conversion-route-state.ts` — Add `deriveClientConversionRouteState({ attemptId, session_id, canceled })` parallel to existing function.
 - `app/lib/structured-data.ts` — Add `buildBreadcrumbSchema(conversion)`. Breadcrumb trail: `Home > {Category} Converter > {Source} to {Target}` (e.g., `Home > Image Converter > WebP to PNG`). For server-side conversions without a hub page, use `Home > {Source} to {Target}`.
 
@@ -354,7 +373,8 @@ Adds entries, updates all public surfaces. New entries start `indexable: false`.
 
 **Modify:**
 - `app/routes/api/metrics.tsx` — Converter check: filter to `getServerConversions()` only. Add `clientConversions` section aggregating from `client_conversion_attempts`.
-- `app/lib/request-rate-limit.ts` — Add rate limit tier for client conversion endpoints (10 req/min for start/complete/fail, 20 req/min for status).
+
+> **Note:** Request-rate-limit tiers for client endpoints were moved to A5 — they are already in place by this point.
 
 ### Step C4 — Image converter hub page
 
