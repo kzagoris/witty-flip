@@ -13,12 +13,80 @@ interface AggregatedToolStats {
     p95DurationMs: number
 }
 
+interface ClientConversionMetricCounts {
+    total: number
+    reserved: number
+    paymentRequired: number
+    pendingPayment: number
+    ready: number
+    completed: number
+    failed: number
+    expired: number
+    paid: number
+}
+
+interface AggregatedClientConversionStats extends ClientConversionMetricCounts {
+    conversionType: string
+    avgDurationMs: number
+    p95DurationMs: number
+}
+
 function calculatePercentile(values: number[], percentile: number): number {
     if (values.length === 0) return 0
 
     const sorted = [...values].sort((left, right) => left - right)
     const index = Math.max(0, Math.ceil(sorted.length * percentile) - 1)
     return sorted[Math.min(index, sorted.length - 1)] ?? 0
+}
+
+function createEmptyClientConversionCounts(): ClientConversionMetricCounts {
+    return {
+        total: 0,
+        reserved: 0,
+        paymentRequired: 0,
+        pendingPayment: 0,
+        ready: 0,
+        completed: 0,
+        failed: 0,
+        expired: 0,
+        paid: 0,
+    }
+}
+
+function incrementClientConversionCounts(
+    counts: ClientConversionMetricCounts,
+    status: string | null | undefined,
+    wasPaid: number | null | undefined,
+): void {
+    counts.total += 1
+
+    if (wasPaid === 1) {
+        counts.paid += 1
+    }
+
+    switch (status) {
+        case "reserved":
+            counts.reserved += 1
+            break
+        case "payment_required":
+            counts.paymentRequired += 1
+            break
+        case "pending_payment":
+            counts.pendingPayment += 1
+            break
+        case "ready":
+            counts.ready += 1
+            break
+        case "completed":
+            counts.completed += 1
+            break
+        case "failed":
+            counts.failed += 1
+            break
+        case "expired":
+            counts.expired += 1
+            break
+    }
 }
 
 function toAgeMs(value: string | null | undefined, nowMs: number): number | null {
@@ -62,7 +130,7 @@ export async function handleMetricsRequest(request: Request): Promise<Response> 
         pathModule,
         fs,
         { db },
-        { conversions, conversionEvents },
+        { clientConversionAttempts, conversions, conversionEvents },
         { eq, sql },
         { CONVERSION_TIMEOUT_MS, MAX_CONCURRENT_JOBS },
         { CONVERSIONS_DIR },
@@ -90,7 +158,7 @@ export async function handleMetricsRequest(request: Request): Promise<Response> 
     const oneHourAgo = new Date(Date.now() - 60 * 60 * 1000).toISOString()
     const stalledBefore = new Date(nowMs - CONVERSION_TIMEOUT_MS).toISOString()
 
-    const [diskStats, queueStats, conversionStats, eventStats, lastSuccess] = await Promise.all([
+    const [diskStats, queueStats, conversionStats, clientConversionStats, eventStats, lastSuccess] = await Promise.all([
         // Disk stats
         (async () => {
             try {
@@ -277,6 +345,75 @@ export async function handleMetricsRequest(request: Request): Promise<Response> 
             }
         })(),
 
+        // Client conversion stats (last 1hr)
+        (async () => {
+            const rows = await db
+                .select({
+                    conversionType: clientConversionAttempts.conversionType,
+                    status: clientConversionAttempts.status,
+                    durationMs: clientConversionAttempts.durationMs,
+                    wasPaid: clientConversionAttempts.wasPaid,
+                })
+                .from(clientConversionAttempts)
+                .where(
+                    sql`datetime(coalesce(${clientConversionAttempts.completedAt}, ${clientConversionAttempts.startedAt})) >= datetime(${oneHourAgo})`,
+                )
+
+            const totals = createEmptyClientConversionCounts()
+            const durations: number[] = []
+            const byConversionStats = new Map<string, ClientConversionMetricCounts & { durations: number[] }>()
+
+            for (const row of rows) {
+                incrementClientConversionCounts(totals, row.status, row.wasPaid)
+
+                if (typeof row.durationMs === "number") {
+                    durations.push(row.durationMs)
+                }
+
+                const currentConversionStats = byConversionStats.get(row.conversionType) ?? {
+                    ...createEmptyClientConversionCounts(),
+                    durations: [],
+                }
+
+                incrementClientConversionCounts(currentConversionStats, row.status, row.wasPaid)
+
+                if (typeof row.durationMs === "number") {
+                    currentConversionStats.durations.push(row.durationMs)
+                }
+
+                byConversionStats.set(row.conversionType, currentConversionStats)
+            }
+
+            const byConversion: AggregatedClientConversionStats[] = [...byConversionStats.entries()]
+                .map(([conversionType, stats]) => ({
+                    conversionType,
+                    total: stats.total,
+                    reserved: stats.reserved,
+                    paymentRequired: stats.paymentRequired,
+                    pendingPayment: stats.pendingPayment,
+                    ready: stats.ready,
+                    completed: stats.completed,
+                    failed: stats.failed,
+                    expired: stats.expired,
+                    paid: stats.paid,
+                    avgDurationMs: stats.durations.length > 0
+                        ? Math.round(stats.durations.reduce((sum, duration) => sum + duration, 0) / stats.durations.length)
+                        : 0,
+                    p95DurationMs: calculatePercentile(stats.durations, 0.95),
+                }))
+                .sort((left, right) => left.conversionType.localeCompare(right.conversionType))
+
+            return {
+                ...totals,
+                avgDurationMs: durations.length > 0
+                    ? Math.round(durations.reduce((sum, duration) => sum + duration, 0) / durations.length)
+                    : 0,
+                p50DurationMs: calculatePercentile(durations, 0.5),
+                p95DurationMs: calculatePercentile(durations, 0.95),
+                byConversion,
+            }
+        })(),
+
         // Event stats (last 1hr)
         (async () => {
             const rows = await db
@@ -328,7 +465,7 @@ export async function handleMetricsRequest(request: Request): Promise<Response> 
     }
     try {
         registerAllConvertersModule.registerAllConverters()
-        const requiredTools = [...new Set(conversionsModule.getAllConversionTypes().map(c => c.toolName))]
+        const requiredTools = [...new Set(conversionsModule.getServerConversions().map(c => c.toolName))]
         const missingTools = requiredTools.filter(t => !convertersModule.getConverter(t))
         converterCheck = {
             status: missingTools.length > 0 ? "down" : "ok",
@@ -357,6 +494,9 @@ export async function handleMetricsRequest(request: Request): Promise<Response> 
             conversions: {
                 last1h: conversionStats,
                 lastSuccessfulAt: lastSuccess,
+            },
+            clientConversions: {
+                last1h: clientConversionStats,
             },
             events: {
                 last1h: eventStats,

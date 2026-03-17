@@ -11,7 +11,7 @@ interface DownloadServerDeps {
     db: typeof import("~/lib/db").db
     conversions: typeof import("~/lib/db/schema").conversions
     getStoredOutputPath: typeof import("~/lib/conversion-files").getStoredOutputPath
-    getConversionBySlug: typeof import("~/lib/conversions").getConversionBySlug
+    getServerConversionBySlug: typeof import("~/lib/conversions").getServerConversionBySlug
     checkAndConsumeRequestRateLimit: typeof import("~/lib/request-rate-limit").checkAndConsumeRequestRateLimit
     resolveClientIp: typeof import("~/lib/request-ip").resolveClientIp
     initializeServerRuntime: typeof import("~/lib/server-runtime").initializeServerRuntime
@@ -53,7 +53,7 @@ const getDownloadServerDeps = createServerOnlyFn(async (): Promise<DownloadServe
             db: dbModule.db,
             conversions: schemaModule.conversions,
             getStoredOutputPath: conversionFilesModule.getStoredOutputPath,
-            getConversionBySlug: conversionsModule.getConversionBySlug,
+            getServerConversionBySlug: conversionsModule.getServerConversionBySlug,
             checkAndConsumeRequestRateLimit: requestRateLimitModule.checkAndConsumeRequestRateLimit,
             resolveClientIp: requestIpModule.resolveClientIp,
             initializeServerRuntime: serverRuntimeModule.initializeServerRuntime,
@@ -93,7 +93,7 @@ export async function handleDownloadRequest(fileId: string, clientIp?: string): 
         db,
         conversions,
         getStoredOutputPath,
-        getConversionBySlug,
+        getServerConversionBySlug,
         checkAndConsumeRequestRateLimit,
         initializeServerRuntime,
     } = await getDownloadServerDeps()
@@ -154,7 +154,7 @@ export async function handleDownloadRequest(fileId: string, clientIp?: string): 
         return Response.json(result.body, { status: result.status, headers: responseHeaders })
     }
 
-    const conversionMeta = getConversionBySlug(conversion.conversionType)
+    const conversionMeta = getServerConversionBySlug(conversion.conversionType)
     if (!conversionMeta) {
         const result = errorResult(500, "conversion_metadata_missing", "Conversion metadata is unavailable.", {
             fileId,

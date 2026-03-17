@@ -6,6 +6,7 @@ import { BlogCTABanner } from "~/components/blog/BlogCTABanner"
 import { BlogBottomCTA } from "~/components/blog/BlogBottomCTA"
 import { getConversionBySlug } from "~/lib/conversions"
 import { callServerFn } from "~/lib/api-client"
+import { resolveBaseUrl } from "~/lib/base-url"
 import { getBlogPostBySlug } from "~/server/api/blog"
 import type { BlogPost } from "~/lib/blog"
 
@@ -57,11 +58,6 @@ export async function handleBlogPostRequest(slug: string): Promise<Response> {
   })
 }
 
-function resolveBaseUrl(): string {
-  return typeof window === "undefined"
-    ? (process.env.BASE_URL ?? "https://wittyflip.com").replace(/\/$/, "")
-    : window.location.origin
-}
 
 export async function loadBlogPostPage(
   slug: string,

@@ -4,6 +4,7 @@ import { PageShell } from "~/components/layout/PageShell"
 import { BlogPostCard } from "~/components/blog/BlogPostCard"
 import { callServerFn } from "~/lib/api-client"
 import { getBlogPosts } from "~/server/api/blog"
+import { resolveBaseUrl } from "~/lib/base-url"
 import type { BlogPostSummary } from "~/lib/blog"
 
 function escapeHtml(value: string): string {
@@ -67,9 +68,7 @@ export async function loadBlogIndexPage(): Promise<{ posts: BlogPostSummary[] }>
 export const Route = createFileRoute("/blog/")({
   loader: () => loadBlogIndexPage(),
   head: () => {
-    const baseUrl = typeof window === "undefined"
-      ? (process.env.BASE_URL ?? "https://wittyflip.com").replace(/\/$/, "")
-      : window.location.origin
+    const baseUrl = resolveBaseUrl()
     const canonicalUrl = `${baseUrl}/blog`
     const imageUrl = `${baseUrl}/og-default.png`
 

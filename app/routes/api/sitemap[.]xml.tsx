@@ -1,12 +1,19 @@
 import { createFileRoute } from "@tanstack/react-router"
 import '~/lib/load-env'
 
+function resolveBaseUrl(): string {
+    const configuredBaseUrl = process.env.BASE_URL?.trim()
+    return configuredBaseUrl && configuredBaseUrl !== '/'
+        ? configuredBaseUrl.replace(/\/$/, "")
+        : "https://wittyflip.com"
+}
+
 export async function handleSitemapRequest(): Promise<Response> {
-    const { getAllConversionTypes } = await import("~/lib/conversions")
+    const { getIndexableConversions } = await import("~/lib/conversions")
     const { readAllBlogSlugs } = await import("~/lib/blog")
 
-    const baseUrl = (process.env.BASE_URL ?? "https://wittyflip.com").replace(/\/$/, "")
-    const conversionTypes = getAllConversionTypes()
+    const baseUrl = resolveBaseUrl()
+    const conversionTypes = getIndexableConversions()
     const blogSlugs = readAllBlogSlugs()
 
     const urls = [
@@ -14,6 +21,8 @@ export async function handleSitemapRequest(): Promise<Response> {
         ...conversionTypes.map(
             (ct) => `  <url><loc>${baseUrl}/${ct.slug}</loc></url>`,
         ),
+        `  <url><loc>${baseUrl}/image-converter</loc></url>`,
+        `  <url><loc>${baseUrl}/privacy</loc></url>`,
         `  <url><loc>${baseUrl}/blog</loc></url>`,
         ...blogSlugs.map(
             (slug) => `  <url><loc>${baseUrl}/blog/${slug}</loc></url>`,

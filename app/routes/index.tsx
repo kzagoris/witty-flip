@@ -1,25 +1,25 @@
 import { createFileRoute } from '@tanstack/react-router'
 import { PageShell } from '~/components/layout/PageShell'
+import { CategorizedConversionGrid } from '~/components/home/CategorizedConversionGrid'
 import { HeroSection } from '~/components/home/HeroSection'
-import { ConversionGrid } from '~/components/home/ConversionGrid'
-import { getConversionSummaries } from '~/lib/conversion-summaries'
+import { getDisplayConversionSummaries } from '~/lib/conversion-categories'
 
-const summaries = getConversionSummaries()
+const summaries = getDisplayConversionSummaries()
 
 export const Route = createFileRoute('/')({
   head: () => ({
     meta: [
-      { title: 'WittyFlip - Free Online File Converter' },
+      { title: 'Convert Files Without the Guesswork | WittyFlip' },
       {
         name: 'description',
         content:
-          'Convert documents online for free. DOCX to Markdown, DJVU to PDF, EPUB to MOBI, and more. No signup needed.',
+          'Convert images, documents, ebooks, and more without the guesswork. Many WittyFlip tools run in your browser, and server-side jobs are auto-deleted after download.',
       },
-      { property: 'og:title', content: 'WittyFlip - Free Online File Converter' },
+      { property: 'og:title', content: 'Convert Files Without the Guesswork | WittyFlip' },
       {
         property: 'og:description',
         content:
-          'Convert documents online for free. DOCX to Markdown, DJVU to PDF, EPUB to MOBI, and more.',
+          'Convert images, documents, ebooks, and more without the guesswork. Many WittyFlip tools run in your browser, and server-side jobs are auto-deleted after download.',
       },
       { property: 'og:type', content: 'website' },
     ],
@@ -31,11 +31,8 @@ function HomePage() {
   return (
     <PageShell>
       <HeroSection />
-      <section className="mt-10">
-        <h2 className="mb-6 font-heading text-2xl font-bold text-neutral-900">
-          Choose a Conversion
-        </h2>
-        <ConversionGrid conversions={summaries} />
+      <section className='mt-12'>
+        <CategorizedConversionGrid conversions={summaries} />
       </section>
     </PageShell>
   )

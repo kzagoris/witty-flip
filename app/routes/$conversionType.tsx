@@ -1,30 +1,22 @@
-import { useCallback, useEffect, useState } from "react"
-import { createFileRoute, notFound, useNavigate } from "@tanstack/react-router"
+import { createFileRoute, notFound } from "@tanstack/react-router"
 import { z } from "zod"
+import { ClientConversionPage } from "~/components/conversion/ClientConversionPage"
+import { ServerConversionPage } from "~/components/conversion/ServerConversionPage"
 import { PageShell } from "~/components/layout/PageShell"
-import { ConversionHero } from "~/components/conversion/ConversionHero"
-import { SEOContent } from "~/components/conversion/SEOContent"
-import { FAQSection } from "~/components/conversion/FAQSection"
-import { RelatedConversions } from "~/components/conversion/RelatedConversions"
-import { FileUploader } from "~/components/conversion/FileUploader"
-import { ConversionStatus } from "~/components/conversion/ConversionStatus"
-import { ConversionProgress } from "~/components/conversion/ConversionProgress"
-import { ErrorCard } from "~/components/conversion/ErrorCard"
-import { QuotaBadge } from "~/components/conversion/QuotaBadge"
-import { PaymentPrompt } from "~/components/conversion/PaymentPrompt"
-import { useConversionFlow } from "~/hooks/useConversionFlow"
-import { getConversionBySlug } from "~/lib/conversions"
-import { deriveConversionRouteState, shouldSyncConversionSearch } from "~/lib/conversion-route-state"
-import { getRateLimitStatus } from "~/server/api/rate-limit-status"
 import { callServerFn } from "~/lib/api-client"
+import { resolveBaseUrl } from "~/lib/base-url"
+import { getConversionBySlug } from "~/lib/conversions"
+import {
+    buildBreadcrumbSchema,
+    buildFAQPageSchema,
+    buildSoftwareAppSchema,
+} from "~/lib/structured-data"
 import type { RateLimitStatusResponse } from "~/server/api/contracts"
-import { buildFAQPageSchema, buildSoftwareAppSchema } from "~/lib/structured-data"
-import { MAX_FILE_SIZE } from "~/lib/file-validation"
-
-const DEFAULT_PAYMENT_REQUIRED_MESSAGE = "Free daily limit reached. Complete payment to continue."
+import { getRateLimitStatus } from "~/server/api/rate-limit-status"
 
 const searchSchema = z.object({
     fileId: z.string().optional(),
+    attemptId: z.string().optional(),
     session_id: z.string().optional(),
     canceled: z.coerce.boolean().optional(),
 })
@@ -48,8 +40,12 @@ export const Route = createFileRoute("/$conversionType")({
     head: ({ loaderData }) => {
         if (!loaderData) return {}
         const { conversion } = loaderData
+        const baseUrl = resolveBaseUrl()
+        const canonicalUrl = `${baseUrl}/${conversion.slug}`
         const faqSchema = buildFAQPageSchema(conversion.faq)
         const appSchema = buildSoftwareAppSchema(conversion)
+        const breadcrumbSchema = buildBreadcrumbSchema(conversion)
+
         return {
             meta: [
                 { title: conversion.seo.title },
@@ -58,7 +54,12 @@ export const Route = createFileRoute("/$conversionType")({
                 { property: "og:title", content: conversion.seo.title },
                 { property: "og:description", content: conversion.seo.description },
                 { property: "og:type", content: "website" },
+                { property: "og:url", content: canonicalUrl },
+                { name: "twitter:card", content: "summary" },
+                { name: "twitter:title", content: conversion.seo.title },
+                { name: "twitter:description", content: conversion.seo.description },
             ],
+            links: [{ rel: "canonical", href: canonicalUrl }],
             scripts: [
                 {
                     type: "application/ld+json",
@@ -67,6 +68,10 @@ export const Route = createFileRoute("/$conversionType")({
                 {
                     type: "application/ld+json",
                     children: JSON.stringify(appSchema),
+                },
+                {
+                    type: "application/ld+json",
+                    children: JSON.stringify(breadcrumbSchema),
                 },
             ],
         }
@@ -85,172 +90,30 @@ export const Route = createFileRoute("/$conversionType")({
 function ConversionPage() {
     const { conversion, initialQuota } = Route.useLoaderData()
     const search = Route.useSearch()
-    const { fileId: searchFileId, session_id, canceled } = search
-    const navigate = useNavigate({ from: "/$conversionType" })
 
-    const syncFileIdInSearch = useCallback(
-        (fileId: string | null) => {
-            if (!shouldSyncConversionSearch(search, fileId)) {
-                return
-            }
-
-            void navigate({
-                to: "/$conversionType",
-                params: { conversionType: conversion.slug },
-                search: (prev) => ({
-                    ...prev,
-                    fileId: fileId ?? undefined,
-                    session_id: undefined,
-                    canceled: undefined,
-                }),
-                replace: true,
-                resetScroll: false,
-            })
-        },
-        [conversion.slug, navigate, search],
-    )
-
-    const handleExpired = useCallback(() => {
-        void navigate({
-            to: "/$conversionType",
-            params: { conversionType: conversion.slug },
-            search: (prev) => ({
-                ...prev,
-                fileId: undefined,
-                session_id: undefined,
-                canceled: undefined,
-            }),
-            replace: true,
-            resetScroll: false,
-        })
-    }, [conversion.slug, navigate])
-
-    const { initialFileId, initialState, initialCanceled } = deriveConversionRouteState({
-        fileId: searchFileId,
-        session_id,
-        canceled,
-    })
-
-    const flow = useConversionFlow({
-        conversionType: conversion.slug,
-        initialFileId,
-        initialState,
-        initialCanceled,
-        onFileIdChange: syncFileIdInSearch,
-        onExpired: handleExpired,
-    })
-
-    const [quota, setQuota] = useState<RateLimitStatusResponse | null>(initialQuota)
-
-    useEffect(() => {
-        setQuota(initialQuota)
-    }, [initialQuota])
-
-    const fetchQuota = useCallback(async () => {
-        const result = await callServerFn<RateLimitStatusResponse>(getRateLimitStatus)
-        if (result.ok) {
-            setQuota(result.data)
-        }
-    }, [])
-
-    useEffect(() => {
-        if (initialQuota == null && flow.state === "idle") {
-            void fetchQuota()
-        }
-    }, [fetchQuota, flow.state, initialQuota])
-
-    useEffect(() => {
-        if (
-            flow.state === "converting" ||
-            flow.state === "payment_required" ||
-            flow.state === "pending_payment" ||
-            flow.state === "completed" ||
-            flow.state === "failed" ||
-            flow.state === "timeout" ||
-            flow.state === "expired"
-        ) {
-            void fetchQuota()
-        }
-    }, [flow.state, fetchQuota])
-
-    const maxSizeMB = MAX_FILE_SIZE / (1024 * 1024)
-
-    const renderFlowSection = () => {
-        if (flow.state === "idle") {
-            return (
-                <>
-                    <FileUploader
-                        sourceExtensions={conversion.sourceExtensions}
-                        sourceMimeTypes={conversion.sourceMimeTypes}
-                        maxSizeMB={maxSizeMB}
-                        onFileSelected={(file) => void flow.startUpload(file)}
-                    />
-                </>
-            )
-        }
-
-        if (flow.state === "uploading") {
-            return <ConversionProgress progress={5} message="Uploading file..." />
-        }
-
-        if (flow.state === "payment_required") {
-            const paymentNotice =
-                flow.canceledMessage ??
-                (flow.status?.message && flow.status.message !== DEFAULT_PAYMENT_REQUIRED_MESSAGE
-                    ? flow.status.message
-                    : undefined)
-
-            return <PaymentPrompt fileId={flow.fileId!} notice={paymentNotice} />
-        }
-
-        if (flow.state === "failed" || flow.state === "timeout") {
-            return (
-                <ErrorCard
-                    errorCode={flow.error?.error}
-                    message={flow.error?.message ?? "Something went wrong."}
-                    onRetry={flow.reset}
-                />
-            )
-        }
-
-        if (flow.state === "expired") {
-            return (
-                <ErrorCard message="Download window has expired. Please convert the file again." onRetry={flow.reset} />
-            )
-        }
-
-        if (flow.status) {
-            return (
-                <ConversionStatus
-                    status={flow.status}
-                    targetFormat={conversion.targetFormat}
-                    fileId={flow.fileId!}
-                    onReset={flow.reset}
-                    onExpired={flow.markExpired}
-                />
-            )
-        }
-
-        return <ConversionProgress progress={25} message="Starting conversion..." />
+    if (conversion.processingMode === "client") {
+        return (
+            <ClientConversionPage
+                conversion={conversion}
+                initialQuota={initialQuota}
+                search={{
+                    attemptId: search.attemptId,
+                    session_id: search.session_id,
+                    canceled: search.canceled,
+                }}
+            />
+        )
     }
 
     return (
-        <PageShell>
-            <ConversionHero conversion={conversion} />
-
-            <div className="mt-8 space-y-6">
-                {quota && (
-                    <div className="flex justify-center">
-                        <QuotaBadge remaining={quota.remaining} limit={quota.limit} />
-                    </div>
-                )}
-
-                {renderFlowSection()}
-            </div>
-
-            <SEOContent html={conversion.seoContent} />
-            <FAQSection faqs={conversion.faq} />
-            <RelatedConversions slugs={conversion.relatedConversions} />
-        </PageShell>
+        <ServerConversionPage
+            conversion={conversion}
+            initialQuota={initialQuota}
+            search={{
+                fileId: search.fileId,
+                session_id: search.session_id,
+                canceled: search.canceled,
+            }}
+        />
     )
 }
