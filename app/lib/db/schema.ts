@@ -1,4 +1,4 @@
-import { sqliteTable, text, integer, uniqueIndex, index } from 'drizzle-orm/sqlite-core'
+import { sqliteTable, text, integer, uniqueIndex, index, check } from 'drizzle-orm/sqlite-core'
 import { sql } from 'drizzle-orm'
 
 export const rateLimits = sqliteTable('rate_limits', {
@@ -13,7 +13,8 @@ export const rateLimits = sqliteTable('rate_limits', {
 
 export const payments = sqliteTable('payments', {
   id: integer('id').primaryKey({ autoIncrement: true }),
-  fileId: text('file_id').notNull(),
+  fileId: text('file_id'),
+  clientAttemptId: text('client_attempt_id'),
   stripeSessionId: text('stripe_session_id').notNull().unique(),
   stripePaymentIntent: text('stripe_payment_intent'),
   amountCents: integer('amount_cents').notNull(),
@@ -24,11 +25,44 @@ export const payments = sqliteTable('payments', {
   createdAt: text('created_at').default(sql`(datetime('now'))`),
   checkoutExpiresAt: text('checkout_expires_at'),
   completedAt: text('completed_at'),
+}, (table) => [
+  check(
+    'payments_reference_check',
+    sql`(
+      (${table.fileId} is not null and ${table.clientAttemptId} is null) or
+      (${table.fileId} is null and ${table.clientAttemptId} is not null)
+    )`,
+  ),
+])
+
+export const clientConversionAttempts = sqliteTable('client_conversion_attempts', {
+  id: text('id').primaryKey(),
+  conversionType: text('conversion_type').notNull(),
+  category: text('category').notNull(),
+  ipAddress: text('ip_address').notNull(),
+  inputMode: text('input_mode').notNull(),
+  originalFilename: text('original_filename'),
+  inputSizeBytes: integer('input_size_bytes'),
+  outputSizeBytes: integer('output_size_bytes'),
+  outputFilename: text('output_filename'),
+  outputMimeType: text('output_mime_type'),
+  tokenHash: text('token_hash').notNull(),
+  recoveryToken: text('recovery_token'),
+  rateLimitDate: text('rate_limit_date'),
+  wasPaid: integer('was_paid').default(0),
+  status: text('status').notNull().default('reserved'),
+  errorCode: text('error_code'),
+  errorMessage: text('error_message'),
+  durationMs: integer('duration_ms'),
+  startedAt: text('started_at').default(sql`(datetime('now'))`),
+  completedAt: text('completed_at'),
+  expiresAt: text('expires_at').notNull(),
 })
 
 export const conversions = sqliteTable('conversions', {
   id: text('id').primaryKey(), // UUID
   originalFilename: text('original_filename').notNull(),
+  category: text('category').notNull().default('document'),
   sourceFormat: text('source_format').notNull(),
   targetFormat: text('target_format').notNull(),
   conversionType: text('conversion_type').notNull(),
@@ -53,6 +87,7 @@ export const conversions = sqliteTable('conversions', {
 export const conversionEvents = sqliteTable('conversion_events', {
   id: integer('id').primaryKey({ autoIncrement: true }),
   fileId: text('file_id').notNull(),
+  eventSource: text('event_source').notNull().default('server'),
   eventType: text('event_type').notNull(),
   fromStatus: text('from_status'),
   toStatus: text('to_status'),

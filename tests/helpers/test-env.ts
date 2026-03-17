@@ -64,7 +64,8 @@ export async function setupTestDb(_sandbox: TestSandbox) {
   await client.execute(`
     CREATE TABLE IF NOT EXISTS payments (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
-      file_id TEXT NOT NULL,
+      file_id TEXT,
+      client_attempt_id TEXT,
       stripe_session_id TEXT NOT NULL UNIQUE,
       stripe_payment_intent TEXT,
       amount_cents INTEGER NOT NULL,
@@ -74,7 +75,11 @@ export async function setupTestDb(_sandbox: TestSandbox) {
       status TEXT DEFAULT 'pending',
       created_at TEXT DEFAULT (datetime('now')),
       checkout_expires_at TEXT,
-      completed_at TEXT
+      completed_at TEXT,
+      CHECK (
+        (file_id IS NOT NULL AND client_attempt_id IS NULL) OR
+        (file_id IS NULL AND client_attempt_id IS NOT NULL)
+      )
     )
   `)
 
@@ -82,6 +87,7 @@ export async function setupTestDb(_sandbox: TestSandbox) {
     CREATE TABLE IF NOT EXISTS conversions (
       id TEXT PRIMARY KEY,
       original_filename TEXT NOT NULL,
+      category TEXT NOT NULL DEFAULT 'document',
       source_format TEXT NOT NULL,
       target_format TEXT NOT NULL,
       conversion_type TEXT NOT NULL,
@@ -108,6 +114,7 @@ export async function setupTestDb(_sandbox: TestSandbox) {
     CREATE TABLE IF NOT EXISTS conversion_events (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       file_id TEXT NOT NULL,
+      event_source TEXT NOT NULL DEFAULT 'server',
       event_type TEXT NOT NULL,
       from_status TEXT,
       to_status TEXT,
@@ -134,12 +141,14 @@ export async function setupTestDb(_sandbox: TestSandbox) {
     BEGIN
       INSERT INTO conversion_events (
         file_id,
+        event_source,
         event_type,
         to_status,
         tool_name,
         message
       ) VALUES (
         NEW.id,
+        'server',
         'conversion_created',
         NEW.status,
         NEW.tool_name,
@@ -155,6 +164,7 @@ export async function setupTestDb(_sandbox: TestSandbox) {
     BEGIN
       INSERT INTO conversion_events (
         file_id,
+        event_source,
         event_type,
         from_status,
         to_status,
@@ -162,6 +172,7 @@ export async function setupTestDb(_sandbox: TestSandbox) {
         message
       ) VALUES (
         NEW.id,
+        'server',
         'conversion_status_changed',
         OLD.status,
         NEW.status,
@@ -180,11 +191,13 @@ export async function setupTestDb(_sandbox: TestSandbox) {
     BEGIN
       INSERT INTO conversion_events (
         file_id,
+        event_source,
         event_type,
         payment_status,
         message
       ) VALUES (
-        NEW.file_id,
+        COALESCE(NEW.file_id, NEW.client_attempt_id),
+        'server',
         'payment_created',
         NEW.status,
         'Payment record created.'
@@ -199,14 +212,88 @@ export async function setupTestDb(_sandbox: TestSandbox) {
     BEGIN
       INSERT INTO conversion_events (
         file_id,
+        event_source,
         event_type,
         payment_status,
         message
       ) VALUES (
-        NEW.file_id,
+        COALESCE(NEW.file_id, NEW.client_attempt_id),
+        'server',
         'payment_status_changed',
         NEW.status,
         'Payment status changed.'
+      );
+    END
+  `)
+
+  await client.execute(`
+    CREATE TABLE IF NOT EXISTS client_conversion_attempts (
+      id TEXT PRIMARY KEY,
+      conversion_type TEXT NOT NULL,
+      category TEXT NOT NULL,
+      ip_address TEXT NOT NULL,
+      input_mode TEXT NOT NULL,
+      original_filename TEXT,
+      input_size_bytes INTEGER,
+      output_size_bytes INTEGER,
+      output_filename TEXT,
+      output_mime_type TEXT,
+      token_hash TEXT NOT NULL,
+      recovery_token TEXT,
+      rate_limit_date TEXT,
+      was_paid INTEGER DEFAULT 0,
+      status TEXT NOT NULL DEFAULT 'reserved',
+      error_code TEXT,
+      error_message TEXT,
+      duration_ms INTEGER,
+      started_at TEXT DEFAULT (datetime('now')),
+      completed_at TEXT,
+      expires_at TEXT NOT NULL
+    )
+  `)
+
+  await client.execute(`
+    CREATE TRIGGER IF NOT EXISTS client_attempts_after_insert_event
+    AFTER INSERT ON client_conversion_attempts
+    BEGIN
+      INSERT INTO conversion_events (
+        file_id,
+        event_source,
+        event_type,
+        to_status,
+        message
+      ) VALUES (
+        NEW.id,
+        'client',
+        'conversion_created',
+        NEW.status,
+        'Client conversion attempt created.'
+      );
+    END
+  `)
+
+  await client.execute(`
+    CREATE TRIGGER IF NOT EXISTS client_attempts_after_update_status_event
+    AFTER UPDATE OF status ON client_conversion_attempts
+    WHEN OLD.status IS NOT NEW.status
+    BEGIN
+      INSERT INTO conversion_events (
+        file_id,
+        event_source,
+        event_type,
+        from_status,
+        to_status,
+        message
+      ) VALUES (
+        NEW.id,
+        'client',
+        'conversion_status_changed',
+        OLD.status,
+        NEW.status,
+        CASE
+          WHEN NEW.error_message IS NOT NULL AND length(NEW.error_message) > 0 THEN NEW.error_message
+          ELSE 'Client conversion status changed.'
+        END
       );
     END
   `)
