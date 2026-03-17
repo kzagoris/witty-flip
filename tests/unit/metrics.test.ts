@@ -7,6 +7,8 @@ import type * as SchemaModule from '~/lib/db/schema'
 import type * as MetricsModule from '~/routes/api/metrics'
 
 type DB = Awaited<ReturnType<typeof setupTestDb>>['db']
+type ConversionInsert = typeof SchemaModule.conversions.$inferInsert
+type ClientAttemptInsert = typeof SchemaModule.clientConversionAttempts.$inferInsert
 
 interface MetricsResponse {
   disk: {
@@ -56,6 +58,36 @@ interface MetricsResponse {
     }
     lastSuccessfulAt: string | null
   }
+  clientConversions: {
+    last1h: {
+      total: number
+      reserved: number
+      paymentRequired: number
+      pendingPayment: number
+      ready: number
+      completed: number
+      failed: number
+      expired: number
+      paid: number
+      avgDurationMs: number
+      p50DurationMs: number
+      p95DurationMs: number
+      byConversion: Array<{
+        conversionType: string
+        total: number
+        reserved: number
+        paymentRequired: number
+        pendingPayment: number
+        ready: number
+        completed: number
+        failed: number
+        expired: number
+        paid: number
+        avgDurationMs: number
+        p95DurationMs: number
+      }>
+    }
+  }
   events: {
     last1h: {
       total: number
@@ -69,7 +101,11 @@ interface MetricsResponse {
 }
 
 let db: DB
-let schema: { conversions: typeof SchemaModule.conversions; conversionEvents: typeof SchemaModule.conversionEvents }
+let schema: {
+  clientConversionAttempts: typeof SchemaModule.clientConversionAttempts
+  conversions: typeof SchemaModule.conversions
+  conversionEvents: typeof SchemaModule.conversionEvents
+}
 let handleMetricsRequest: typeof MetricsModule.handleMetricsRequest
 
 async function seed(overrides: Record<string, unknown> = {}) {
@@ -85,7 +121,28 @@ async function seed(overrides: Record<string, unknown> = {}) {
     wasPaid: 0,
     status: 'uploaded',
     ...overrides,
-  } as Parameters<typeof db.insert>[0] extends { values: (v: infer V) => unknown } ? V : never)
+  } as ConversionInsert)
+  return id
+}
+
+async function seedClientAttempt(overrides: Record<string, unknown> = {}) {
+  const id = randomUUID()
+  const now = new Date().toISOString()
+
+  await db.insert(schema.clientConversionAttempts).values({
+    id,
+    conversionType: 'png-to-jpg',
+    category: 'image',
+    ipAddress: '127.0.0.1',
+    inputMode: 'file',
+    originalFilename: 'test.png',
+    inputSizeBytes: 256,
+    tokenHash: 'test-token-hash',
+    status: 'reserved',
+    startedAt: now,
+    expiresAt: new Date(Date.now() + 30 * 60 * 1000).toISOString(),
+    ...overrides,
+  } as ClientAttemptInsert)
   return id
 }
 
@@ -152,6 +209,7 @@ describe('handleMetricsRequest', () => {
     expect(body).toHaveProperty('converters')
     expect(body).toHaveProperty('queue')
     expect(body).toHaveProperty('conversions')
+    expect(body).toHaveProperty('clientConversions')
     expect(body).toHaveProperty('events')
     expect(body).toHaveProperty('requestRateLimit')
     expect(body).toHaveProperty('system')
@@ -165,6 +223,8 @@ describe('handleMetricsRequest', () => {
     expect(body.converters).toHaveProperty('missingTools')
     expect(body.converters).toHaveProperty('coverage')
     expect(body.converters.requiredTools).toContain('pandoc')
+    expect(body.converters.requiredTools).not.toContain('canvas')
+    expect(body.converters.requiredTools).not.toContain('webp-wasm')
     expect(body.converters.missingTools).toEqual([])
     expect(body.converters.coverage).toBe('registered')
     expect(body.queue).toHaveProperty('activeJobs')
@@ -179,6 +239,10 @@ describe('handleMetricsRequest', () => {
     expect(body.conversions.last1h).toHaveProperty('p50DurationMs')
     expect(body.conversions.last1h).toHaveProperty('p95DurationMs')
     expect(body.conversions.last1h).toHaveProperty('byTool')
+    expect(body.clientConversions).toHaveProperty('last1h')
+    expect(body.clientConversions.last1h).toHaveProperty('p50DurationMs')
+    expect(body.clientConversions.last1h).toHaveProperty('p95DurationMs')
+    expect(body.clientConversions.last1h).toHaveProperty('byConversion')
     expect(body.events).toHaveProperty('last1h')
     expect(body.requestRateLimit).toHaveProperty('activeBuckets')
     expect(body.system).toHaveProperty('uptime')
@@ -252,6 +316,64 @@ describe('handleMetricsRequest', () => {
     ])
   })
 
+  it('reports client conversion attempt metrics without polluting server converter health', async () => {
+    const now = new Date().toISOString()
+    await seedClientAttempt({ status: 'completed', wasPaid: 1, startedAt: now, completedAt: now, durationMs: 120 })
+    await seedClientAttempt({ status: 'failed', startedAt: now, completedAt: now, durationMs: 40 })
+    await seedClientAttempt({ conversionType: 'webp-to-png', status: 'ready', startedAt: now })
+    await seedClientAttempt({ conversionType: 'webp-to-png', status: 'pending_payment', startedAt: now })
+
+    const resp = await handleMetricsRequest(makeRequest({ Authorization: 'Bearer test-secret-key' }))
+    const body = await resp.json() as MetricsResponse
+
+    expect(body.converters.requiredTools).not.toContain('canvas')
+    expect(body.converters.requiredTools).not.toContain('webp-wasm')
+    expect(body.clientConversions.last1h).toMatchObject({
+      total: 4,
+      reserved: 0,
+      paymentRequired: 0,
+      pendingPayment: 1,
+      ready: 1,
+      completed: 1,
+      failed: 1,
+      expired: 0,
+      paid: 1,
+      avgDurationMs: 80,
+      p50DurationMs: 40,
+      p95DurationMs: 120,
+    })
+    expect(body.clientConversions.last1h.byConversion).toEqual([
+      {
+        conversionType: 'png-to-jpg',
+        total: 2,
+        reserved: 0,
+        paymentRequired: 0,
+        pendingPayment: 0,
+        ready: 0,
+        completed: 1,
+        failed: 1,
+        expired: 0,
+        paid: 1,
+        avgDurationMs: 80,
+        p95DurationMs: 120,
+      },
+      {
+        conversionType: 'webp-to-png',
+        total: 2,
+        reserved: 0,
+        paymentRequired: 0,
+        pendingPayment: 1,
+        ready: 1,
+        completed: 0,
+        failed: 0,
+        expired: 0,
+        paid: 0,
+        avgDurationMs: 0,
+        p95DurationMs: 0,
+      },
+    ])
+  })
+
   it('handles zero-conversions edge: successRate=100, avgDurationMs=0, lastSuccessfulAt=null', async () => {
     const resp = await handleMetricsRequest(makeRequest({ Authorization: 'Bearer test-secret-key' }))
     const body = await resp.json() as MetricsResponse
@@ -263,6 +385,11 @@ describe('handleMetricsRequest', () => {
     expect(body.conversions.last1h.p95DurationMs).toBe(0)
     expect(body.conversions.last1h.byTool).toEqual([])
     expect(body.conversions.lastSuccessfulAt).toBeNull()
+    expect(body.clientConversions.last1h.total).toBe(0)
+    expect(body.clientConversions.last1h.avgDurationMs).toBe(0)
+    expect(body.clientConversions.last1h.p50DurationMs).toBe(0)
+    expect(body.clientConversions.last1h.p95DurationMs).toBe(0)
+    expect(body.clientConversions.last1h.byConversion).toEqual([])
     expect(body.events.last1h.total).toBe(0)
   })
 

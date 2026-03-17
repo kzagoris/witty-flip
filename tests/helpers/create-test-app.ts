@@ -64,6 +64,10 @@ export async function createTestApp(): Promise<TestApp> {
     statusModule,
     rateLimitModule,
     checkoutModule,
+    clientConversionStartModule,
+    clientConversionStatusModule,
+    clientConversionCompleteModule,
+    clientConversionFailModule,
     downloadModule,
     webhookModule,
     healthModule,
@@ -78,6 +82,10 @@ export async function createTestApp(): Promise<TestApp> {
     import('~/server/api/conversion-status'),
     import('~/server/api/rate-limit-status'),
     import('~/server/api/create-checkout'),
+    import('~/server/api/client-conversion-start'),
+    import('~/server/api/client-conversion-status'),
+    import('~/server/api/client-conversion-complete'),
+    import('~/server/api/client-conversion-fail'),
     import('~/routes/api/download/$fileId'),
     import('~/routes/api/webhook/stripe'),
     import('~/routes/api/health'),
@@ -100,6 +108,14 @@ export async function createTestApp(): Promise<TestApp> {
         response = await uploadModule.handleUploadHttpRequest(request, peerIp)
       } else if (req.method === 'POST' && pathname === '/api/convert') {
         response = await convertModule.handleConvertHttpRequest(request, peerIp)
+      } else if (req.method === 'POST' && pathname === '/api/client-conversion/start') {
+        response = await clientConversionStartModule.handleClientConversionStartHttpRequest(request, peerIp)
+      } else if (req.method === 'GET' && pathname === '/api/client-conversion/status') {
+        response = await clientConversionStatusModule.handleClientConversionStatusHttpRequest(request, peerIp)
+      } else if (req.method === 'POST' && pathname === '/api/client-conversion/complete') {
+        response = await clientConversionCompleteModule.handleClientConversionCompleteHttpRequest(request, peerIp)
+      } else if (req.method === 'POST' && pathname === '/api/client-conversion/fail') {
+        response = await clientConversionFailModule.handleClientConversionFailHttpRequest(request, peerIp)
       } else if (req.method === 'POST' && pathname === '/api/create-checkout') {
         response = await checkoutModule.handleCreateCheckoutHttpRequest(request, peerIp)
       } else if (req.method === 'GET' && pathname === '/api/rate-limit-status') {

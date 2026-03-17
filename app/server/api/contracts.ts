@@ -1,3 +1,7 @@
+import type { ClientAttemptStatus } from '~/lib/client-conversion-attempts'
+
+export type { ClientAttemptStatus }
+
 export type ConversionJobStatus =
   | 'uploaded'
   | 'payment_required'
@@ -9,11 +13,14 @@ export type ConversionJobStatus =
   | 'timeout'
   | 'expired'
 
+export type ClientConversionInputMode = 'file' | 'paste'
+
 export interface ApiErrorResponse {
   error: string
   message: string
   fileId?: string
-  status?: ConversionJobStatus
+  attemptId?: string
+  status?: ConversionJobStatus | ClientAttemptStatus
   checkoutUrl?: string
   remaining?: number
   limit?: number
@@ -42,9 +49,77 @@ export interface RateLimitStatusResponse {
 }
 
 export interface CheckoutResponse {
-  fileId: string
   sessionId: string
   checkoutUrl: string
+}
+
+export type ServerCheckoutResponse = CheckoutResponse & { fileId: string }
+
+export type ClientCheckoutResponse = CheckoutResponse & { attemptId: string }
+
+export type CheckoutRequest = { fileId: string } | { attemptId: string }
+
+export interface ClientConversionStartRequest {
+  conversionSlug: string
+  originalFilename?: string
+  fileSizeBytes?: number
+  inputMode: ClientConversionInputMode
+}
+
+export type ClientConversionStartResponse =
+  | {
+      allowed: true
+      attemptId: string
+      token: string
+      processingMode: 'client'
+      status: 'reserved'
+      remainingFreeAfterReservation: number
+    }
+  | {
+      allowed: false
+      attemptId: string
+      requiresPayment: true
+      processingMode: 'client'
+      status: 'payment_required'
+    }
+
+export interface ClientConversionStatusRequest {
+  attemptId: string
+}
+
+export interface ClientConversionStatusResponse {
+  attemptId: string
+  status: ClientAttemptStatus
+  processingMode: 'client'
+  paid: boolean
+  expiresAt: string
+  token?: string
+  errorCode?: string
+  message?: string
+}
+
+export interface ClientConversionCompleteRequest {
+  attemptId: string
+  token: string
+  outputFilename: string
+  outputMimeType: string
+  outputSizeBytes?: number
+  durationMs?: number
+}
+
+export interface ClientConversionCompleteResponse {
+  recorded: true
+}
+
+export interface ClientConversionFailRequest {
+  attemptId: string
+  token: string
+  errorCode: string
+  errorMessage?: string
+}
+
+export interface ClientConversionFailResponse {
+  released: true
 }
 
 export interface ApiResult<T> {
@@ -112,4 +187,16 @@ export function errorResult(
 
 export function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null
+}
+
+export function parseOptionalNonNegativeInteger(value: unknown): number | undefined {
+  if (value === undefined) {
+    return undefined
+  }
+
+  if (typeof value !== 'number' || !Number.isInteger(value) || value < 0) {
+    return undefined
+  }
+
+  return value
 }

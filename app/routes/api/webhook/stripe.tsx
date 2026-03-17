@@ -28,7 +28,8 @@ function isUnrecoverableWebhookError(error: unknown): boolean {
     if (!(error instanceof Error)) return false
     return (
         error.message === "No payment record found for Stripe session." ||
-        error.message === "No conversion record found for fileId."
+        error.message === "No conversion record found for fileId." ||
+        error.message === "No client conversion attempt record found for attemptId."
     )
 }
 

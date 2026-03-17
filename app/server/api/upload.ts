@@ -142,6 +142,10 @@ export async function processUpload(
         return errorResult(400, "invalid_conversion_type", "The requested conversion type is not supported.")
     }
 
+    if (conversion.processingMode !== "server") {
+        return errorResult(400, "invalid_conversion_type", "This conversion type does not accept server uploads.")
+    }
+
     if (file.size > MAX_FILE_SIZE) {
         return errorResult(413, "file_too_large", "Files must be 10MB or smaller.")
     }
@@ -169,6 +173,7 @@ export async function processUpload(
         await db.insert(conversions).values({
             id: fileId,
             originalFilename: file.name,
+            category: conversion.category,
             sourceFormat: conversion.sourceFormat,
             targetFormat: conversion.targetFormat,
             conversionType,

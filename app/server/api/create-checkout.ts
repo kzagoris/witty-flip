@@ -4,18 +4,23 @@ import { createRequestLogger } from "~/lib/server-observability"
 import {
     errorResult,
     isRecord,
+    type ClientCheckoutResponse,
     normalizeConversionStatus,
     type ApiErrorResponse,
     type ApiResult,
-    type CheckoutResponse,
+    type ServerCheckoutResponse,
 } from "./contracts"
 
 interface CreateCheckoutServerDeps {
     eq: typeof import("drizzle-orm").eq
     db: typeof import("~/lib/db").db
+    clientConversionAttempts: typeof import("~/lib/db/schema").clientConversionAttempts
     conversions: typeof import("~/lib/db/schema").conversions
+    isClientAttemptExpired: typeof import("~/lib/client-conversion-attempts").isClientAttemptExpired
+    normalizeClientAttemptStatus: typeof import("~/lib/client-conversion-attempts").normalizeClientAttemptStatus
     checkAndConsumeRequestRateLimit: typeof import("~/lib/request-rate-limit").checkAndConsumeRequestRateLimit
     initializeServerRuntime: typeof import("~/lib/server-runtime").initializeServerRuntime
+    createClientCheckoutSession: typeof import("~/lib/stripe").createClientCheckoutSession
     createCheckoutSession: typeof import("~/lib/stripe").createCheckoutSession
 }
 
@@ -26,16 +31,29 @@ const getCreateCheckoutServerDeps = createServerOnlyFn(async (): Promise<CreateC
         import("drizzle-orm"),
         import("~/lib/db"),
         import("~/lib/db/schema"),
+        import("~/lib/client-conversion-attempts"),
         import("~/lib/request-rate-limit"),
         import("~/lib/server-runtime"),
         import("~/lib/stripe"),
     ]).then(
-        ([drizzleOrmModule, dbModule, schemaModule, requestRateLimitModule, serverRuntimeModule, stripeModule]) => ({
+        ([
+            drizzleOrmModule,
+            dbModule,
+            schemaModule,
+            clientConversionAttemptsModule,
+            requestRateLimitModule,
+            serverRuntimeModule,
+            stripeModule,
+        ]) => ({
             eq: drizzleOrmModule.eq,
             db: dbModule.db,
+            clientConversionAttempts: schemaModule.clientConversionAttempts,
             conversions: schemaModule.conversions,
+            isClientAttemptExpired: clientConversionAttemptsModule.isClientAttemptExpired,
+            normalizeClientAttemptStatus: clientConversionAttemptsModule.normalizeClientAttemptStatus,
             checkAndConsumeRequestRateLimit: requestRateLimitModule.checkAndConsumeRequestRateLimit,
             initializeServerRuntime: serverRuntimeModule.initializeServerRuntime,
+            createClientCheckoutSession: stripeModule.createClientCheckoutSession,
             createCheckoutSession: stripeModule.createCheckoutSession,
         }),
     )
@@ -64,38 +82,74 @@ const getCreateCheckoutRequestContext = createServerOnlyFn(async (): Promise<Cre
     return createCheckoutRequestContextPromise
 })
 
-function parseFileIdInput(data: unknown): string | undefined {
-    if (!isRecord(data) || typeof data["fileId"] !== "string") {
-        return undefined
+type CheckoutTarget = { kind: "server"; fileId: string } | { kind: "client"; attemptId: string }
+
+function parseCheckoutRequest(data: unknown): CheckoutTarget | ApiResult<ApiErrorResponse> {
+    if (!isRecord(data)) {
+        return errorResult(400, "invalid_request", "A valid checkout request is required.")
     }
 
-    const fileId = data["fileId"].trim()
-    return fileId.length > 0 ? fileId : undefined
+    const fileId = typeof data["fileId"] === "string" ? data["fileId"].trim() : ""
+    const attemptId = typeof data["attemptId"] === "string" ? data["attemptId"].trim() : ""
+
+    if (Boolean(fileId) === Boolean(attemptId)) {
+        return errorResult(400, "invalid_request", "Provide exactly one of fileId or attemptId.")
+    }
+
+    return fileId ? { kind: "server", fileId } : { kind: "client", attemptId }
 }
 
-function mapCheckoutError(fileId: string, error: unknown): ApiResult<ApiErrorResponse> {
+function mapCheckoutError(
+    target: CheckoutTarget,
+    error: unknown,
+): ApiResult<ApiErrorResponse> {
     const message = error instanceof Error ? error.message : "Unknown checkout error."
+    const extras = target.kind === "server" ? { fileId: target.fileId } : { attemptId: target.attemptId }
 
     if (message.startsWith("Cannot create checkout for conversion with status")) {
-        return errorResult(409, "invalid_status", message, { fileId })
+        return errorResult(409, "invalid_status", message, extras)
     }
 
-    if (message === "Conversion not found.") {
-        return errorResult(404, "not_found", message, { fileId })
+    if (message.startsWith("Cannot create checkout for client conversion with status")) {
+        return errorResult(409, "invalid_status", message, extras)
     }
 
-    return errorResult(500, "checkout_unavailable", "Unable to start checkout right now. Please try again.", {
-        fileId,
-    })
+    if (message === "Conversion not found." || message === "Client conversion attempt not found.") {
+        return errorResult(404, "not_found", message, extras)
+    }
+
+    if (message === "Client conversion attempt has expired.") {
+        return errorResult(410, "attempt_expired", "This conversion attempt has expired. Please start again.", {
+            ...extras,
+            status: "expired",
+        })
+    }
+
+    return errorResult(
+        500,
+        "checkout_unavailable",
+        "Unable to start checkout right now. Please try again.",
+        extras,
+    )
 }
 
 export async function processCreateCheckout(
     data: unknown,
     clientIp: string,
     context: { requestId?: string } = {},
-): Promise<ApiResult<CheckoutResponse | ApiErrorResponse>> {
-    const { eq, db, conversions, checkAndConsumeRequestRateLimit, initializeServerRuntime, createCheckoutSession } =
-        await getCreateCheckoutServerDeps()
+): Promise<ApiResult<ServerCheckoutResponse | ClientCheckoutResponse | ApiErrorResponse>> {
+    const {
+        eq,
+        db,
+        clientConversionAttempts,
+        conversions,
+        isClientAttemptExpired,
+        normalizeClientAttemptStatus,
+        checkAndConsumeRequestRateLimit,
+        initializeServerRuntime,
+        createClientCheckoutSession,
+        createCheckoutSession,
+    } = await getCreateCheckoutServerDeps()
 
     initializeServerRuntime()
     const requestId = context.requestId ?? resolveRequestId()
@@ -115,52 +169,103 @@ export async function processCreateCheckout(
         })
     }
 
-    const fileId = parseFileIdInput(data)
-    if (!fileId) {
-        return errorResult(400, "invalid_file_id", "A valid fileId is required.")
+    const target = parseCheckoutRequest(data)
+    if ("status" in target && "body" in target) {
+        return target
     }
 
-    const conversion = await db.query.conversions.findFirst({
-        where: eq(conversions.id, fileId),
+    if (target.kind === "server") {
+        const conversion = await db.query.conversions.findFirst({
+            where: eq(conversions.id, target.fileId),
+        })
+
+        if (!conversion) {
+            return errorResult(404, "not_found", "Conversion not found.", { fileId: target.fileId })
+        }
+
+        const conversionStatus = normalizeConversionStatus(conversion.status)
+
+        if (conversionStatus !== "payment_required" && conversionStatus !== "pending_payment") {
+            return errorResult(
+                409,
+                "invalid_status",
+                `Cannot create a checkout session for status "${conversionStatus}".`,
+                {
+                    fileId: target.fileId,
+                    status: conversionStatus,
+                },
+            )
+        }
+
+        await db.update(conversions).set({ ipAddress: clientIp }).where(eq(conversions.id, target.fileId))
+
+        try {
+            const checkout = await createCheckoutSession(target.fileId)
+            requestLogger.info({ fileId: target.fileId, sessionId: checkout.sessionId }, "Created checkout session")
+            return {
+                status: 200,
+                body: {
+                    fileId: target.fileId,
+                    checkoutUrl: checkout.checkoutUrl,
+                    sessionId: checkout.sessionId,
+                },
+            }
+        } catch (error) {
+            const result = mapCheckoutError(target, error)
+            if (result.status >= 500) {
+                requestLogger.error({ fileId: target.fileId, err: error }, "Failed to create checkout session")
+            } else {
+                requestLogger.info({ fileId: target.fileId, status: result.status }, "Rejected checkout session request")
+            }
+            return result
+        }
+    }
+
+    const attempt = await db.query.clientConversionAttempts.findFirst({
+        where: eq(clientConversionAttempts.id, target.attemptId),
     })
 
-    if (!conversion) {
-        return errorResult(404, "not_found", "Conversion not found.", { fileId })
+    if (!attempt) {
+        return errorResult(404, "not_found", "Client conversion attempt not found.", { attemptId: target.attemptId })
     }
 
-    const conversionStatus = normalizeConversionStatus(conversion.status)
+    if (isClientAttemptExpired(attempt.expiresAt)) {
+        return errorResult(410, "attempt_expired", "This conversion attempt has expired. Please start again.", {
+            attemptId: target.attemptId,
+            status: "expired",
+        })
+    }
 
-    if (conversionStatus !== "payment_required" && conversionStatus !== "pending_payment") {
+    const attemptStatus = normalizeClientAttemptStatus(attempt.status)
+    if (attemptStatus !== "payment_required" && attemptStatus !== "pending_payment") {
         return errorResult(
             409,
             "invalid_status",
-            `Cannot create a checkout session for status "${conversionStatus}".`,
+            `Cannot create a checkout session for status "${attemptStatus}".`,
             {
-                fileId,
-                status: conversionStatus,
+                attemptId: target.attemptId,
+                status: attemptStatus,
             },
         )
     }
 
-    await db.update(conversions).set({ ipAddress: clientIp }).where(eq(conversions.id, fileId))
-
     try {
-        const checkout = await createCheckoutSession(fileId)
-        requestLogger.info({ fileId, sessionId: checkout.sessionId }, "Created checkout session")
+        const checkout = await createClientCheckoutSession(target.attemptId)
+        requestLogger.info({ attemptId: target.attemptId, sessionId: checkout.sessionId }, "Created client checkout session")
         return {
             status: 200,
             body: {
-                fileId,
+                attemptId: target.attemptId,
                 checkoutUrl: checkout.checkoutUrl,
                 sessionId: checkout.sessionId,
             },
         }
     } catch (error) {
-        const result = mapCheckoutError(fileId, error)
+        const result = mapCheckoutError(target, error)
         if (result.status >= 500) {
-            requestLogger.error({ fileId, err: error }, "Failed to create checkout session")
+            requestLogger.error({ attemptId: target.attemptId, err: error }, "Failed to create client checkout session")
         } else {
-            requestLogger.info({ fileId, status: result.status }, "Rejected checkout session request")
+            requestLogger.info({ attemptId: target.attemptId, status: result.status }, "Rejected client checkout session request")
         }
         return result
     }

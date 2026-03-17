@@ -6,7 +6,7 @@ import { conversions } from '~/lib/db/schema'
 import { createChildLogger } from '~/lib/logger'
 import { consumeRateLimitSlot, releaseRateLimitSlot } from '~/lib/rate-limit'
 import { getConverter } from '~/lib/converters'
-import { getConversionBySlug } from '~/lib/conversions'
+import { getServerConversionBySlug } from '~/lib/conversions'
 import { getStoredInputPath, getStoredOutputPath } from '~/lib/conversion-files'
 
 export { CONVERSIONS_DIR } from '~/lib/conversion-files'
@@ -117,7 +117,7 @@ async function runConversion(job: typeof conversions.$inferSelect): Promise<void
   })
 
   try {
-    const conversionMeta = getConversionBySlug(job.conversionType)
+    const conversionMeta = getServerConversionBySlug(job.conversionType)
     if (!conversionMeta) {
       await db
         .update(conversions)

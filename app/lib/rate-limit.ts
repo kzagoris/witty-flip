@@ -1,5 +1,5 @@
 import { eq, and, sql } from 'drizzle-orm'
-import { db } from '~/lib/db'
+import { db, type DbExecutor } from '~/lib/db'
 import { rateLimits } from '~/lib/db/schema'
 
 export const FREE_DAILY_LIMIT = 2
@@ -29,8 +29,8 @@ export interface RateLimitReservation extends RateLimitResult {
   rateLimitDate: string
 }
 
-async function ensureRateLimitBucket(ip: string, date: string): Promise<void> {
-  await db
+async function ensureRateLimitBucket(ip: string, date: string, executor: DbExecutor = db): Promise<void> {
+  await executor
     .insert(rateLimits)
     .values({
       ipAddress: ip,
@@ -41,8 +41,8 @@ async function ensureRateLimitBucket(ip: string, date: string): Promise<void> {
     .onConflictDoNothing()
 }
 
-async function getRateLimitBucket(ip: string, date: string): Promise<RateLimitBucket> {
-  const row = await db.query.rateLimits.findFirst({
+async function getRateLimitBucket(ip: string, date: string, executor: DbExecutor = db): Promise<RateLimitBucket> {
+  const row = await executor.query.rateLimits.findFirst({
     where: and(eq(rateLimits.ipAddress, ip), eq(rateLimits.date, date)),
   })
 
@@ -68,10 +68,10 @@ export async function checkRateLimit(ip: string): Promise<RateLimitResult> {
   return toRateLimitResult(await getRateLimitBucket(ip, getTodayUTC()))
 }
 
-export async function reserveRateLimitSlot(ip: string, date = getTodayUTC()): Promise<RateLimitReservation> {
-  await ensureRateLimitBucket(ip, date)
+export async function reserveRateLimitSlot(ip: string, date = getTodayUTC(), executor: DbExecutor = db): Promise<RateLimitReservation> {
+  await ensureRateLimitBucket(ip, date, executor)
 
-  const claimResult = await db
+  const claimResult = await executor
     .update(rateLimits)
     .set({
       reservedFreeSlots: sql`coalesce(${rateLimits.reservedFreeSlots}, 0) + 1`,
@@ -82,7 +82,7 @@ export async function reserveRateLimitSlot(ip: string, date = getTodayUTC()): Pr
       sql`coalesce(${rateLimits.freeConversionCount}, 0) + coalesce(${rateLimits.reservedFreeSlots}, 0) < ${FREE_DAILY_LIMIT}`,
     ))
 
-  const status = toRateLimitResult(await getRateLimitBucket(ip, date))
+  const status = toRateLimitResult(await getRateLimitBucket(ip, date, executor))
 
   return {
     ...status,
@@ -91,10 +91,10 @@ export async function reserveRateLimitSlot(ip: string, date = getTodayUTC()): Pr
   }
 }
 
-export async function consumeRateLimitSlot(ip: string, date: string): Promise<void> {
-  await ensureRateLimitBucket(ip, date)
+export async function consumeRateLimitSlot(ip: string, date: string, executor: DbExecutor = db): Promise<void> {
+  await ensureRateLimitBucket(ip, date, executor)
 
-  await db
+  await executor
     .update(rateLimits)
     .set({
       freeConversionCount: sql`coalesce(${rateLimits.freeConversionCount}, 0) + 1`,
@@ -106,10 +106,10 @@ export async function consumeRateLimitSlot(ip: string, date: string): Promise<vo
     .where(and(eq(rateLimits.ipAddress, ip), eq(rateLimits.date, date)))
 }
 
-export async function releaseRateLimitSlot(ip: string, date: string): Promise<void> {
-  await ensureRateLimitBucket(ip, date)
+export async function releaseRateLimitSlot(ip: string, date: string, executor: DbExecutor = db): Promise<void> {
+  await ensureRateLimitBucket(ip, date, executor)
 
-  await db
+  await executor
     .update(rateLimits)
     .set({
       reservedFreeSlots: sql`case
