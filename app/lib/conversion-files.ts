@@ -1,6 +1,6 @@
 import path from 'node:path'
 import fs from 'node:fs/promises'
-import { getConversionBySlug } from '~/lib/conversions'
+import { getServerConversionBySlug } from '~/lib/conversions'
 
 export const CONVERSIONS_DIR = path.resolve('data', 'conversions')
 
@@ -30,6 +30,6 @@ export function resolveOutputPath(
   storedOutputFilePath: string | null,
 ): string | null {
   if (storedOutputFilePath) return storedOutputFilePath
-  const meta = getConversionBySlug(conversionType)
+  const meta = getServerConversionBySlug(conversionType)
   return meta ? getStoredOutputPath(fileId, meta.targetExtension) : null
 }

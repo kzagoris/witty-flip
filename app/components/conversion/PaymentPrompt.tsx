@@ -6,12 +6,14 @@ import { createCheckout } from '~/server/api/create-checkout'
 import { callServerFn } from '~/lib/api-client'
 import type { CheckoutResponse } from '~/server/api/contracts'
 
-interface PaymentPromptProps {
-  fileId: string
+type PaymentPromptProps = {
   notice?: string
-}
+} & (
+  | { fileId: string; attemptId?: never }
+  | { attemptId: string; fileId?: never }
+)
 
-export function PaymentPrompt({ fileId, notice }: PaymentPromptProps) {
+export function PaymentPrompt({ fileId, attemptId, notice }: PaymentPromptProps) {
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
@@ -19,7 +21,7 @@ export function PaymentPrompt({ fileId, notice }: PaymentPromptProps) {
     setLoading(true)
     setError(null)
 
-    const result = await callServerFn(createCheckout, { fileId })
+    const result = await callServerFn(createCheckout, fileId ? { fileId } : { attemptId })
     if (!result.ok) {
       setError(result.error.message)
       setLoading(false)
@@ -45,7 +47,7 @@ export function PaymentPrompt({ fileId, notice }: PaymentPromptProps) {
 
         <div>
           <h3 className="font-heading text-lg font-bold text-amber-800">
-            Free Daily Limit Reached
+            Free daily limit reached
           </h3>
           <p className="mt-1 text-sm text-amber-700">
             You&apos;ve used your 2 free conversions for today.

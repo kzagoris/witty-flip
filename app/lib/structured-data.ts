@@ -30,3 +30,48 @@ export function buildSoftwareAppSchema(conversion: ConversionType) {
     },
   }
 }
+
+export function buildBreadcrumbSchema(
+  conversion: ConversionType,
+): {
+  '@context': 'https://schema.org'
+  '@type': 'BreadcrumbList'
+  itemListElement: Array<{
+    '@type': 'ListItem'
+    position: number
+    name: string
+    item: string
+  }>
+} {
+  const configuredBaseUrl = process.env.BASE_URL?.trim()
+  const baseUrl = configuredBaseUrl && configuredBaseUrl !== '/'
+    ? configuredBaseUrl.replace(/\/$/, '')
+    : 'https://wittyflip.com'
+  const baseItems = [
+    { name: 'Home', item: `${baseUrl}/` },
+  ]
+
+  const categoryItem = conversion.category === 'image'
+    ? { name: 'Image Converter', item: `${baseUrl}/image-converter` }
+    : null
+
+  const items = [
+    ...baseItems,
+    ...(categoryItem ? [categoryItem] : []),
+    {
+      name: `${conversion.sourceFormat.toUpperCase()} to ${conversion.targetFormat.toUpperCase()}`,
+      item: `${baseUrl}/${conversion.slug}`,
+    },
+  ]
+
+  return {
+    '@context': 'https://schema.org',
+    '@type': 'BreadcrumbList',
+    itemListElement: items.map((item, index) => ({
+      '@type': 'ListItem',
+      position: index + 1,
+      name: item.name,
+      item: item.item,
+    })),
+  }
+}

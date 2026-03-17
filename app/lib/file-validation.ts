@@ -177,6 +177,10 @@ export async function validateFile(
         return { valid: false, error: "Unknown conversion type." }
     }
 
+    if (conversion.processingMode !== "server") {
+        return { valid: false, error: "Client-side conversions do not accept uploaded files through this endpoint." }
+    }
+
     if (buffer.byteLength === 0) {
         return { valid: false, error: "File is empty." }
     }
