@@ -5,6 +5,10 @@ import tsconfigPaths from 'vite-tsconfig-paths'
 import tailwindcss from '@tailwindcss/vite'
 
 export default defineConfig({
+  assetsInclude: ['**/*.wasm'],
+  optimizeDeps: {
+    exclude: ['@jsquash/webp'],
+  },
   server: {
     port: 3000,
   },
