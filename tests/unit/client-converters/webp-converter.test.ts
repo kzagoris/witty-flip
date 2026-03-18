@@ -125,7 +125,7 @@ describe('enhanced WebP converter', () => {
       })
     } catch (error) {
       expect(error).toBeInstanceOf(EnhancedCodecLoadError)
-      expect((error as EnhancedCodecLoadError).name).toBe('EnhancedCodecLoadError')
+      expect((error as InstanceType<typeof EnhancedCodecLoadError>).name).toBe('EnhancedCodecLoadError')
     }
   })
 })
