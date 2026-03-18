@@ -125,6 +125,7 @@ export function useClientConversionFlow({
     const [processingMode, setProcessingMode] = useState<ClientConversionProcessingMode>("standard")
     const [quality, setQuality] = useState(DEFAULT_QUALITY)
     const [enhancedLoadFailed, setEnhancedLoadFailed] = useState(false)
+    const [bookkeepingFailed, setBookkeepingFailed] = useState(false)
 
     const fileRef = useRef<File | null>(null)
     const conversionAbortControllerRef = useRef<AbortController | null>(null)
@@ -199,6 +200,7 @@ export function useClientConversionFlow({
         setNeedsFileReselection(false)
         setReselectionMessage(null)
         setCanceledMessage(null)
+        setBookkeepingFailed(false)
         setProgress(0)
         setProgressMessage("Select a file to begin.")
         setState("idle")
@@ -219,6 +221,7 @@ export function useClientConversionFlow({
         setError(null)
         setResult(null)
         setEnhancedLoadFailed(false)
+        setBookkeepingFailed(false)
         setNeedsFileReselection(false)
         setReselectionMessage(null)
         setCanceledMessage(null)
@@ -309,9 +312,13 @@ export function useClientConversionFlow({
                 // Network/fetch failure — bookkeeping lost, conversion result still valid
             }
 
-            clearStoredToken(currentAttemptId)
-            fileRef.current = null
-            setAttemptId(null)
+            if (bookkeepingOk) {
+                clearStoredToken(currentAttemptId)
+                fileRef.current = null
+                setAttemptId(null)
+            } else {
+                setBookkeepingFailed(true)
+            }
             setStatus(null)
             setError(null)
             setResult(nextResult)
@@ -333,9 +340,7 @@ export function useClientConversionFlow({
 
             if (nextResult) {
                 // Conversion succeeded but something threw after — still show result
-                clearStoredToken(currentAttemptId)
-                fileRef.current = null
-                setAttemptId(null)
+                setBookkeepingFailed(true)
                 setStatus(null)
                 setError(null)
                 setResult(nextResult)
@@ -662,6 +667,7 @@ export function useClientConversionFlow({
         processingMode: effectiveProcessingMode,
         quality,
         enhancedLoadFailed,
+        bookkeepingFailed,
         supportsEnhancedMode,
         setProcessingMode,
         setQuality,

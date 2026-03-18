@@ -221,4 +221,31 @@ describe('processClientConversionComplete', () => {
       wasPaid: 1,
     })
   })
+
+  it('rejects completion when attempt is in a non-completable status', async () => {
+    const token = 'client-complete-wrong-status-token'
+    const { hashClientAttemptToken } = await import('~/lib/client-conversion-attempts')
+    const { processClientConversionComplete } = await import('~/server/api/client-conversion-complete')
+
+    await db.insert(schema.clientConversionAttempts).values({
+      id: 'attempt-wrong-status',
+      conversionType: 'png-to-jpg',
+      category: 'image',
+      ipAddress: '127.0.0.1',
+      inputMode: 'file',
+      tokenHash: hashClientAttemptToken(token),
+      status: 'failed',
+      expiresAt: new Date(Date.now() + 30 * 60_000).toISOString(),
+    })
+
+    const result = await processClientConversionComplete({
+      attemptId: 'attempt-wrong-status',
+      token,
+      outputFilename: 'output.jpg',
+      outputMimeType: 'image/jpeg',
+    }, '127.0.0.1')
+
+    expect(result.status).toBe(409)
+    expect(result.body).toMatchObject({ error: 'invalid_status' })
+  })
 })
