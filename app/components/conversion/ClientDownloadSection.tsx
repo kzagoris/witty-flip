@@ -8,6 +8,7 @@ interface ClientDownloadSectionProps {
   result: ClientConversionResult
   onDownload: () => void
   onReset: () => void
+  bookkeepingWarning?: string
 }
 
 function formatBytes(sizeBytes?: number): string | null {
@@ -26,7 +27,7 @@ function formatBytes(sizeBytes?: number): string | null {
   return `${(sizeBytes / (1024 * 1024)).toFixed(2)} MB`
 }
 
-export function ClientDownloadSection({ result, onDownload, onReset }: ClientDownloadSectionProps) {
+export function ClientDownloadSection({ result, onDownload, onReset, bookkeepingWarning }: ClientDownloadSectionProps) {
   const sizeLabel = useMemo(() => {
     const sizeBytes = result.kind === 'binary'
       ? result.blob?.size
@@ -63,6 +64,18 @@ export function ClientDownloadSection({ result, onDownload, onReset }: ClientDow
           <Download className="h-4 w-4" />
           Download file
         </Button>
+
+        {bookkeepingWarning && (
+          <div className="w-full rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-left text-sm text-amber-900">
+            <div className="mb-1 flex items-center gap-2 font-medium">
+              <AlertTriangle className="h-4 w-4" />
+              Server sync notice
+            </div>
+            <p className="text-xs text-amber-800">
+              {bookkeepingWarning}
+            </p>
+          </div>
+        )}
 
         {result.warnings && result.warnings.length > 0 && (
           <div className="w-full rounded-lg border border-amber-200 bg-white/80 px-4 py-3 text-left text-sm text-amber-900">

@@ -129,6 +129,7 @@ export function ClientConversionPage({ conversion, initialQuota, search }: Clien
           result={flow.result}
           onDownload={flow.downloadResult}
           onReset={flow.reset}
+          bookkeepingWarning={flow.bookkeepingFailed ? flow.progressMessage : undefined}
         />
       )
     }
