@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { getClientConverter } from "~/lib/client-converters"
 import type { ClientConversionProcessingMode, ClientConversionResult } from "~/lib/client-converters/types"
+import { EnhancedCodecLoadError } from "~/lib/client-converters/webp-converter"
 import type { ClientConversionType } from "~/lib/conversions"
 import { DEFAULT_STATUS_POLL_INTERVAL_MS } from "~/lib/status-polling"
 import { callServerFn } from "~/lib/api-client"
@@ -123,7 +124,7 @@ export function useClientConversionFlow({
     )
     const [processingMode, setProcessingMode] = useState<ClientConversionProcessingMode>("standard")
     const [quality, setQuality] = useState(DEFAULT_QUALITY)
-    const [preserveColorProfile, setPreserveColorProfile] = useState(true)
+    const [enhancedLoadFailed, setEnhancedLoadFailed] = useState(false)
 
     const fileRef = useRef<File | null>(null)
     const conversionAbortControllerRef = useRef<AbortController | null>(null)
@@ -203,7 +204,12 @@ export function useClientConversionFlow({
         setState("idle")
     }, [attemptId])
 
-    const runClientConversion = useCallback(async (file: File, currentAttemptId: string, token: string) => {
+    const runClientConversion = useCallback(async (
+        file: File,
+        currentAttemptId: string,
+        token: string,
+        modeOverride?: ClientConversionProcessingMode,
+    ) => {
         conversionAbortControllerRef.current?.abort()
         const abortController = new AbortController()
         conversionAbortControllerRef.current = abortController
@@ -212,6 +218,7 @@ export function useClientConversionFlow({
         setState("converting")
         setError(null)
         setResult(null)
+        setEnhancedLoadFailed(false)
         setNeedsFileReselection(false)
         setReselectionMessage(null)
         setCanceledMessage(null)
@@ -219,10 +226,13 @@ export function useClientConversionFlow({
         setProgressMessage("Preparing your in-browser conversion...")
 
         const startTimeMs = typeof performance !== "undefined" ? performance.now() : Date.now()
+        const activeMode = modeOverride ?? effectiveProcessingMode
         const converterName =
-            effectiveProcessingMode === "enhanced" && conversion.clientConverterEnhanced
+            activeMode === "enhanced" && conversion.clientConverterEnhanced
                 ? conversion.clientConverterEnhanced
                 : conversion.clientConverter
+
+        let nextResult: ClientConversionResult | undefined
 
         try {
             const converter = await getClientConverter(converterName, {
@@ -244,7 +254,7 @@ export function useClientConversionFlow({
                 throw new Error(support.reason ?? "This browser cannot run the requested conversion.")
             }
 
-            const nextResult = await converter.convert(
+            nextResult = await converter.convert(
                 {
                     file,
                     filename: file.name,
@@ -252,8 +262,7 @@ export function useClientConversionFlow({
                 {
                     signal: abortController.signal,
                     quality,
-                    processingMode: effectiveProcessingMode,
-                    preserveColorProfile,
+                    processingMode: activeMode,
                     onProgress: (percent) => {
                         setProgress(Math.min(96, Math.max(20, Math.round(percent))))
                         setProgressMessage("Converting in your browser...")
@@ -264,22 +273,40 @@ export function useClientConversionFlow({
             setProgress(98)
             setProgressMessage("Finalizing conversion...")
 
-            const completionResult = await callServerFn(completeClientConversion, {
-                attemptId: currentAttemptId,
-                token,
-                outputFilename: nextResult.filename,
-                outputMimeType: nextResult.mimeType,
-                outputSizeBytes: getResultSizeBytes(nextResult),
-                durationMs: resolveDurationMs(startTimeMs),
-            })
-
-            if (!completionResult.ok) {
-                if (completionResult.error.status === "expired") {
-                    expireAttempt(currentAttemptId, completionResult.error.message)
-                    return
+            let bookkeepingOk = false
+            try {
+                const completionPayload = {
+                    attemptId: currentAttemptId,
+                    token,
+                    outputFilename: nextResult.filename,
+                    outputMimeType: nextResult.mimeType,
+                    outputSizeBytes: getResultSizeBytes(nextResult),
+                    durationMs: resolveDurationMs(startTimeMs),
                 }
 
-                throw new Error(completionResult.error.message)
+                const completionResult = await callServerFn(completeClientConversion, completionPayload)
+
+                if (!completionResult.ok) {
+                    if (completionResult.error.status === "expired") {
+                        expireAttempt(currentAttemptId, completionResult.error.message)
+                        return
+                    }
+
+                    // Retry once
+                    const retryResult = await callServerFn(completeClientConversion, completionPayload)
+                    if (!retryResult.ok) {
+                        if (retryResult.error.status === "expired") {
+                            expireAttempt(currentAttemptId, retryResult.error.message)
+                            return
+                        }
+                    } else {
+                        bookkeepingOk = true
+                    }
+                } else {
+                    bookkeepingOk = true
+                }
+            } catch {
+                // Network/fetch failure — bookkeeping lost, conversion result still valid
             }
 
             clearStoredToken(currentAttemptId)
@@ -289,9 +316,35 @@ export function useClientConversionFlow({
             setError(null)
             setResult(nextResult)
             setProgress(100)
-            setProgressMessage("Conversion complete. Ready to download.")
+            setProgressMessage(
+                bookkeepingOk
+                    ? "Conversion complete. Ready to download."
+                    : "Conversion complete. Server recording could not be confirmed.",
+            )
             setState("completed")
         } catch (nextError) {
+            if (nextError instanceof EnhancedCodecLoadError) {
+                setProgress(0)
+                setProgressMessage(nextError.message)
+                setEnhancedLoadFailed(true)
+                setState("idle")
+                return
+            }
+
+            if (nextResult) {
+                // Conversion succeeded but something threw after — still show result
+                clearStoredToken(currentAttemptId)
+                fileRef.current = null
+                setAttemptId(null)
+                setStatus(null)
+                setError(null)
+                setResult(nextResult)
+                setProgress(100)
+                setProgressMessage("Conversion complete. Server recording could not be confirmed.")
+                setState("completed")
+                return
+            }
+
             const clientError = createClientError(
                 isAbortError(nextError) ? "conversion_canceled" : "client_conversion_failed",
                 nextError instanceof Error ? nextError.message : "Client conversion failed.",
@@ -327,7 +380,6 @@ export function useClientConversionFlow({
         conversion.targetMimeType,
         effectiveProcessingMode,
         expireAttempt,
-        preserveColorProfile,
         quality,
     ])
 
@@ -553,6 +605,25 @@ export function useClientConversionFlow({
         await runClientConversion(file, nextAttemptId, startResult.data.token)
     }, [attemptId, conversion.slug, runClientConversion, state])
 
+    const retryEnhanced = useCallback(() => {
+        setEnhancedLoadFailed(false)
+        const file = fileRef.current
+        const token = readStoredToken(attemptId)
+        if (file && attemptId && token) {
+            void runClientConversion(file, attemptId, token)
+        }
+    }, [attemptId, runClientConversion])
+
+    const switchToStandard = useCallback(() => {
+        setEnhancedLoadFailed(false)
+        setProcessingMode("standard")
+        const file = fileRef.current
+        const token = readStoredToken(attemptId)
+        if (file && attemptId && token) {
+            void runClientConversion(file, attemptId, token, "standard")
+        }
+    }, [attemptId, runClientConversion])
+
     const downloadResult = useCallback(() => {
         if (!result || typeof window === "undefined" || typeof document === "undefined") {
             return
@@ -590,12 +661,13 @@ export function useClientConversionFlow({
         reselectionMessage,
         processingMode: effectiveProcessingMode,
         quality,
-        preserveColorProfile,
+        enhancedLoadFailed,
         supportsEnhancedMode,
         setProcessingMode,
         setQuality,
-        setPreserveColorProfile,
         startConversion,
+        retryEnhanced,
+        switchToStandard,
         downloadResult,
         markExpired,
         reset,

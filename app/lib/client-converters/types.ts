@@ -16,6 +16,7 @@ export interface ClientConversionOptions {
   signal?: AbortSignal
   quality?: number
   processingMode?: ClientConversionProcessingMode
+  /** Reserved — not yet implemented by any converter. */
   preserveColorProfile?: boolean
   keepMetadata?: boolean
   onProgress?: (percent: number) => void

@@ -9,8 +9,6 @@ interface ConversionOptionsProps {
   onProcessingModeChange: (mode: ClientConversionProcessingMode) => void
   quality: number
   onQualityChange: (quality: number) => void
-  preserveColorProfile: boolean
-  onPreserveColorProfileChange: (preserve: boolean) => void
   disabled?: boolean
   hasEnhancedMode?: boolean
   title?: string
@@ -21,8 +19,6 @@ export function ConversionOptions({
   onProcessingModeChange,
   quality,
   onQualityChange,
-  preserveColorProfile,
-  onPreserveColorProfileChange,
   disabled,
   hasEnhancedMode,
   title = 'Conversion options',
@@ -31,7 +27,7 @@ export function ConversionOptions({
 
   return (
     <div className="rounded-xl border bg-card shadow-sm">
-      <Accordion type="single" collapsible defaultValue="options">
+      <Accordion type="single" collapsible>
         <AccordionItem value="options" className="border-b-0 px-4">
           <AccordionTrigger className="py-3">
             <div className="flex items-center gap-2">
@@ -111,21 +107,7 @@ export function ConversionOptions({
               </p>
             </div>
 
-            <label className="flex items-start gap-3 rounded-lg border border-dashed border-border/80 bg-muted/30 px-3 py-3">
-              <input
-                type="checkbox"
-                checked={preserveColorProfile}
-                disabled={disabled}
-                onChange={(event) => onPreserveColorProfileChange(event.target.checked)}
-                className="mt-0.5 h-4 w-4 rounded border-border text-primary"
-              />
-              <span>
-                <span className="block text-sm font-medium text-foreground">Preserve color profile</span>
-                <span className="block text-xs text-muted-foreground">
-                  Best-effort browser color handling for exports that support it.
-                </span>
-              </span>
-            </label>
+
           </AccordionContent>
         </AccordionItem>
       </Accordion>

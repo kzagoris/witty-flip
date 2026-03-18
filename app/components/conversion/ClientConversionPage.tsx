@@ -13,6 +13,7 @@ import { PaymentPrompt } from '~/components/conversion/PaymentPrompt'
 import { ConversionOptions } from '~/components/conversion/ConversionOptions'
 import { ClientDownloadSection } from '~/components/conversion/ClientDownloadSection'
 import { PrivacyBadge } from '~/components/conversion/PrivacyBadge'
+import { Button } from '~/components/ui/button'
 import { useClientConversionFlow } from '~/hooks/useClientConversionFlow'
 import { deriveClientConversionRouteState, shouldSyncClientConversionSearch } from '~/lib/conversion-route-state'
 import { callServerFn } from '~/lib/api-client'
@@ -164,6 +165,24 @@ export function ClientConversionPage({ conversion, initialQuota, search }: Clien
       return <ConversionProgress progress={flow.progress} message={flow.progressMessage} />
     }
 
+    if (flow.enhancedLoadFailed) {
+      return (
+        <div className='rounded-xl border border-amber-200 bg-amber-50 px-4 py-4 space-y-3'>
+          <p className='text-sm text-amber-900'>
+            Enhanced quality couldn't load. You can retry or continue with Standard mode.
+          </p>
+          <div className='flex gap-3'>
+            <Button variant='outline' size='sm' onClick={flow.retryEnhanced}>
+              Retry Enhanced
+            </Button>
+            <Button size='sm' onClick={flow.switchToStandard}>
+              Continue in Standard
+            </Button>
+          </div>
+        </div>
+      )
+    }
+
     return (
       <div className='space-y-4'>
         {flow.needsFileReselection && flow.reselectionMessage && (
@@ -196,20 +215,18 @@ export function ClientConversionPage({ conversion, initialQuota, search }: Clien
 
         <PrivacyBadge processingMode='client' />
 
+        {renderFlowSection()}
+
         {showConversionOptions && (
           <ConversionOptions
             processingMode={flow.processingMode}
             onProcessingModeChange={flow.setProcessingMode}
             quality={flow.quality}
             onQualityChange={flow.setQuality}
-            preserveColorProfile={flow.preserveColorProfile}
-            onPreserveColorProfileChange={flow.setPreserveColorProfile}
             disabled={isBusy}
             hasEnhancedMode={flow.supportsEnhancedMode}
           />
         )}
-
-        {renderFlowSection()}
       </div>
 
       <SEOContent html={conversion.seoContent} />
