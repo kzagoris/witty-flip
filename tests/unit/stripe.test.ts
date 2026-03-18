@@ -536,6 +536,9 @@ describe('stripe', () => {
       expect(attempt?.wasPaid).toBe(1)
       expect(attempt?.recoveryToken).toBeTruthy()
       expect(attempt?.tokenHash).toBe(hashClientAttemptToken(attempt!.recoveryToken!))
+      // Expiry should be extended to a fresh 30-minute window after payment
+      const expiresAt = new Date(attempt!.expiresAt).getTime()
+      expect(expiresAt).toBeGreaterThan(Date.now() + 29 * 60_000)
       expect(mockEnqueueJob).not.toHaveBeenCalled()
     })
 
@@ -663,6 +666,9 @@ describe('stripe', () => {
         })
         expect(attempt?.status).toBe('ready')
         expect(attempt?.recoveryToken).toBeTruthy()
+        // Expiry should be extended to a fresh 30-minute window after payment recovery
+        const expiresAt = new Date(attempt!.expiresAt).getTime()
+        expect(expiresAt).toBeGreaterThan(Date.now() + 29 * 60_000)
         expect(mockEnqueueJob).not.toHaveBeenCalled()
       })
     })
@@ -798,6 +804,9 @@ describe('stripe', () => {
       expect(attempt?.status).toBe('ready')
       expect(attempt?.wasPaid).toBe(1)
       expect(attempt?.recoveryToken).toBeTruthy()
+      // Expiry should be extended to a fresh 30-minute window after payment reconciliation
+      const expiresAt = new Date(attempt!.expiresAt).getTime()
+      expect(expiresAt).toBeGreaterThan(Date.now() + 29 * 60_000)
       expect(mockEnqueueJob).not.toHaveBeenCalled()
     })
 

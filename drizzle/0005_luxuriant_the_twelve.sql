@@ -1,0 +1,2 @@
+CREATE INDEX `client_attempts_status_expires_idx` ON `client_conversion_attempts` (`status`,`expires_at`);--> statement-breakpoint
+CREATE INDEX `client_attempts_ip_started_idx` ON `client_conversion_attempts` (`ip_address`,`started_at`);

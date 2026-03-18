@@ -48,7 +48,7 @@ Each batch is a separate execution session verified independently before proceed
 1. **Primary: IP match** — requesting IP matches `client_conversion_attempts.ip_address`. Covers the common case (same network, same session).
 2. **Fallback: HMAC recovery cookie** — on `/start`, set an `HttpOnly; Secure; SameSite=Lax` cookie named `wf_attempt_{attemptId}` containing `HMAC-SHA256(attemptId, SERVER_SECRET)`. The cookie has no `Max-Age` (session cookie — cleared when browser closes, matching the attempt lifecycle). On `/status`, if IP doesn't match, verify the cookie HMAC. This handles the edge case where Stripe checkout returns on a different IP (mobile carrier NAT, VPN reconnection, corporate proxy rotation).
 
-Without either proof, an attacker guessing `attemptId` cannot retrieve a mutation credential. Any transition out of `ready` clears any leftover `recoveryToken`. The `SERVER_SECRET` for HMAC is derived from the existing `STRIPE_SECRET_KEY` (or a dedicated `RECOVERY_COOKIE_SECRET` env var if one is set) — no new secret management is needed.
+Without either proof, an attacker guessing `attemptId` cannot retrieve a mutation credential. Any transition out of `ready` clears any leftover `recoveryToken`. The `SERVER_SECRET` for HMAC uses a dedicated `RECOVERY_COOKIE_SECRET` env var. This secret is required in production and must not be the same as `STRIPE_SECRET_KEY` — coupling them would mean a Stripe key rotation invalidates all outstanding recovery cookies, and vice versa. In development, a hardcoded fallback is used when the env var is not set.
 
 **Idempotency guards:**
 - `/complete`: If attempt is already `completed`, return success without re-consuming quota (check status in SQL WHERE clause)
@@ -134,35 +134,7 @@ Zero public-facing changes. Can be deployed and tested without affecting any exi
 
 **Test mocking strategy:** No `_testRegisterConversion` / `_testUnregisterConversion` — zero test code in production `conversions.ts`. Use standard `vi.mock()` pattern (consistent with existing Stripe, spawn-helper mocks).
 
-**Test helper:** `tests/helpers/test-client-conversion.ts` exports a test fixture and a mock setup function:
-```typescript
-// tests/helpers/test-client-conversion.ts
-import { vi } from 'vitest'
-
-export const testClientConversion = {
-  slug: 'test-client-png-to-jpg',
-  category: 'image',
-  processingMode: 'client',
-  clientConverter: 'canvas',
-  sourceExtensions: ['.png'],
-  // ... minimal required fields
-} as const
-
-export function mockConversionsWithClientEntry() {
-  const actual = vi.importActual('~/lib/conversions')
-  vi.mock('~/lib/conversions', async () => {
-    const real = await actual
-    return {
-      ...real,
-      getConversionBySlug: (slug) =>
-        slug === testClientConversion.slug
-          ? testClientConversion
-          : real.getConversionBySlug(slug),
-      getClientConversions: () => [testClientConversion],
-    }
-  })
-}
-```
+**Test mocking approach:** Tests that need client conversion entries use the real registry (9 image entries are present after Batch C) or the lazy-loaded dependency injection pattern from the server function 3-layer architecture. Server function unit tests mock individual deps via `vi.hoisted()` + `vi.mock()` at the module top level — not wrapped in a function, since Vitest hoists `vi.mock()` calls at transform time.
 
 **Tests:** Update `tests/unit/conversions.test.ts` — verify all 7 have required fields, test new helpers return correct counts, assert `getServerConversions()` returns only server-mode entries with `toolName`, assert `getClientConversions()` returns empty (no client entries in Batch A).
 
@@ -195,8 +167,12 @@ error_message TEXT
 duration_ms INTEGER
 started_at TEXT DEFAULT datetime('now')
 completed_at TEXT
-expires_at TEXT NOT NULL            -- 30 minutes from creation
+expires_at TEXT NOT NULL            -- 30 minutes from creation; extended to a fresh 30-minute window when payment completes
 ```
+
+**Indexes:**
+- `(status, expires_at)` — used by cleanup cron to find expired attempts without a full table scan
+- `(ip_address, started_at)` — used by analytics and abuse-detection queries
 
 **Payments update:** Make `fileId` nullable. Add `clientAttemptId TEXT` (nullable). Add `CHECK` constraint: exactly one of `fileId` / `clientAttemptId` is non-null. Update existing payment triggers to use `COALESCE(NEW.file_id, NEW.client_attempt_id)` as the `conversion_events.file_id` reference key.
 
@@ -224,7 +200,7 @@ expires_at TEXT NOT NULL            -- 30 minutes from creation
 
 **New file:** `app/lib/client-converters/webp-converter.ts`
 
-**NPM dependency:** `@jsquash/webp` — the only production-ready, browser-native, encoding-capable WebP WASM option. One Vite config line for WASM asset handling (`optimizeDeps.exclude: ['@aspect/webp']` or `assetsInclude: ['**/*.wasm']`). Lazy-loaded only when user selects Enhanced quality. Run in Web Worker where practical. On load failure: surface non-blocking error, allow retry or fallback to canvas Standard mode.
+**NPM dependency:** `@jsquash/webp` — the only production-ready, browser-native, encoding-capable WebP WASM option. One Vite config line for WASM asset handling (`optimizeDeps.exclude: ['@jsquash/webp']` or `assetsInclude: ['**/*.wasm']`). Lazy-loaded only when user selects Enhanced quality. Run in Web Worker where practical. On load failure: surface non-blocking error, allow retry or fallback to canvas Standard mode.
 
 > **Migration path:** The `@jsquash/*` family also provides `@jsquash/avif` and `@jsquash/jpeg` for Phase 11 advanced codecs.
 
@@ -234,7 +210,7 @@ expires_at TEXT NOT NULL            -- 30 minutes from creation
 
 > **Merged from former A5b:** Rate-limit `executor` parameter is added first in this step because the API endpoints depend on it for transactional atomicity.
 
-**API pattern decision:** All 4 client-conversion endpoints use `createServerFn` (server functions), not file-based routes. They are called exclusively by client hooks via `callServerFn`, matching the existing patterns (`convert.ts`, `create-checkout.ts`, `conversion-status.ts`). `attemptId` is passed as request body data, not URL path params.
+**API pattern decision:** All 4 client-conversion endpoints use `createServerFn` (server functions), not file-based routes. They are called exclusively by client hooks via `callServerFn`, matching the existing patterns (`convert.ts`, `create-checkout.ts`, `conversion-status.ts`). `attemptId` is passed as request body data, not URL path params. This deliberately deviates from the spec's `GET /api/client-conversion/:attemptId/status` to stay consistent with the codebase's server function pattern — the status endpoint is a `GET` server function receiving `attemptId` via the data payload, not a RESTful path param route. An HTTP handler variant (`handleClientConversionStatusHttpRequest`) is also provided for the test harness.
 
 Each endpoint follows the 3-layer pattern from `app/server/api/convert.ts`.
 
@@ -282,7 +258,7 @@ Each endpoint follows the 3-layer pattern from `app/server/api/convert.ts`.
 **Modify:**
 - `app/server/api/contracts.ts` — Add types: `ClientConversionStartResponse`, `ClientConversionStatusResponse`, `ClientConversionCompleteResponse`, `ClientConversionFailResponse`, `ClientAttemptStatus` type union. Add `CheckoutRequest = { fileId: string } | { attemptId: string }`.
 - `app/server/api/create-checkout.ts` — Accept `{ fileId } | { attemptId }`. Dispatch to existing `createCheckoutSession(fileId)` or new `createClientCheckoutSession(attemptId)`.
-- `app/lib/stripe.ts` — Add `createClientCheckoutSession(attemptId)`: looks up `client_conversion_attempts`, creates Stripe session with `{ attemptId }` in metadata. Checkout success URL: `/${conversionType}?attemptId=X&session_id=Y`. Add `reconcileClientPendingPayment(attemptId)`. Update `handleCheckoutCompleted` to check metadata for `attemptId` and, on payment success: mint a fresh token, replace `tokenHash`, store the plaintext in `recoveryToken`, set status to `ready`. The client retrieves that token exactly once via the `/status` endpoint (see recovery cookie below).
+- `app/lib/stripe.ts` — Add `createClientCheckoutSession(attemptId)`: looks up `client_conversion_attempts`, creates Stripe session with `{ attemptId }` in metadata. Checkout success URL: `/${conversionType}?attemptId=X&session_id=Y`. Add `reconcileClientPendingPayment(attemptId)`. Update `handleCheckoutCompleted` to check metadata for `attemptId` and, on payment success: mint a fresh token, replace `tokenHash`, store the plaintext in `recoveryToken`, set status to `ready`, **and extend `expiresAt` to a fresh 30-minute window** so the user has enough time to reselect their file and complete the conversion after returning from Stripe. The client retrieves that token exactly once via the `/status` endpoint (see recovery cookie below).
 - `app/lib/request-rate-limit.ts` — Add rate-limit tier for client conversion endpoints (10 req/min for start/complete/fail, 20 req/min for status). **Moved from C3** — these endpoints are callable after Batch A deployment and must not ship without request throttling.
 - `tests/helpers/create-test-app.ts` — Register 4 new endpoint routes.
 
@@ -348,7 +324,7 @@ New hooks and components. Still no new entries in the conversion registry, so no
   ```
   **Complete the `head` metadata** (currently missing from `$conversionType.tsx:48`): add self-referencing `<link rel="canonical">`, `og:url`, `twitter:card` (`summary`), `twitter:title`, `twitter:description`. These are required by the spec (`SPEC-reach-expansion.md:679`) and apply to both server and client pages.
 - `app/lib/conversion-route-state.ts` — Add `deriveClientConversionRouteState({ attemptId, session_id, canceled })` parallel to existing function.
-- `app/lib/structured-data.ts` — Add `buildBreadcrumbSchema(conversion)`. Breadcrumb trail: `Home > {Category} Converter > {Source} to {Target}` (e.g., `Home > Image Converter > WebP to PNG`). For server-side conversions without a hub page, use `Home > {Source} to {Target}`.
+- `app/lib/structured-data.ts` — Add `buildBreadcrumbSchema(conversion)` and `buildSoftwareAppSchema(conversion)`. Breadcrumb trail: `Home > {Category} Converter > {Source} to {Target}` (e.g., `Home > Image Converter > WebP to PNG`). For server-side conversions without a hub page, use `Home > {Source} to {Target}`. `SoftwareApplication` schema is required by the spec (`SPEC-reach-expansion.md:677`) alongside `FAQPage` and `BreadcrumbList` — all three are emitted in the `head` function of `$conversionType.tsx`.
 
 ---
 

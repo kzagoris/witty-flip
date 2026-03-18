@@ -253,6 +253,16 @@ export async function setupTestDb(_sandbox: TestSandbox) {
   `)
 
   await client.execute(`
+    CREATE INDEX IF NOT EXISTS client_attempts_status_expires_idx
+    ON client_conversion_attempts(status, expires_at)
+  `)
+
+  await client.execute(`
+    CREATE INDEX IF NOT EXISTS client_attempts_ip_started_idx
+    ON client_conversion_attempts(ip_address, started_at)
+  `)
+
+  await client.execute(`
     CREATE TRIGGER IF NOT EXISTS client_attempts_after_insert_event
     AFTER INSERT ON client_conversion_attempts
     BEGIN

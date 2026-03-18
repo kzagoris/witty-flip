@@ -5,6 +5,7 @@ import { db } from '~/lib/db'
 import { clientConversionAttempts, conversions, payments } from '~/lib/db/schema'
 import {
   createClientAttemptToken,
+  getClientAttemptExpiresAt,
   hashClientAttemptToken,
   isClientAttemptExpired,
 } from '~/lib/client-conversion-attempts'
@@ -475,6 +476,7 @@ async function moveClientAttemptToReady(attemptId: string): Promise<void> {
       wasPaid: 1,
       tokenHash: hashClientAttemptToken(recoveryToken),
       recoveryToken,
+      expiresAt: getClientAttemptExpiresAt(),
       errorCode: null,
       errorMessage: null,
     })
@@ -540,6 +542,7 @@ async function handleClientCheckoutCompleted(
             wasPaid: 1,
             tokenHash: hashClientAttemptToken(recoveryToken!),
             recoveryToken,
+            expiresAt: getClientAttemptExpiresAt(),
             errorCode: null,
             errorMessage: null,
           }

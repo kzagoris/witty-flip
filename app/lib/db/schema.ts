@@ -57,7 +57,10 @@ export const clientConversionAttempts = sqliteTable('client_conversion_attempts'
   startedAt: text('started_at').default(sql`(datetime('now'))`),
   completedAt: text('completed_at'),
   expiresAt: text('expires_at').notNull(),
-})
+}, (table) => [
+  index('client_attempts_status_expires_idx').on(table.status, table.expiresAt),
+  index('client_attempts_ip_started_idx').on(table.ipAddress, table.startedAt),
+])
 
 export const conversions = sqliteTable('conversions', {
   id: text('id').primaryKey(), // UUID

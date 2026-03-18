@@ -18,6 +18,13 @@ export function validateEnv(): void {
     console.warn('[env] Warning: METRICS_API_KEY is not set — /api/metrics will return 503')
   }
 
+  if (!process.env.RECOVERY_COOKIE_SECRET) {
+    if (isProduction) {
+      throw new Error('Missing required environment variable: RECOVERY_COOKIE_SECRET')
+    }
+    console.warn('[env] Warning: RECOVERY_COOKIE_SECRET is not set — using development fallback')
+  }
+
   if (!process.env.DATABASE_URL) {
     process.env.DATABASE_URL = 'file:./data/sqlite.db'
   }

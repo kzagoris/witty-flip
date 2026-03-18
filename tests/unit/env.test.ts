@@ -85,4 +85,31 @@ describe('validateEnv', () => {
       expect.stringContaining('METRICS_API_KEY'),
     )
   })
+
+  it('throws in production when RECOVERY_COOKIE_SECRET is missing', async () => {
+    delete process.env.RECOVERY_COOKIE_SECRET
+    process.env.NODE_ENV = 'production'
+    process.env.STRIPE_SECRET_KEY = 'sk_test_xxx'
+    process.env.STRIPE_WEBHOOK_SECRET = 'whsec_xxx'
+    process.env.METRICS_API_KEY = 'test-key'
+
+    const { validateEnv } = await import('~/lib/env')
+    expect(() => validateEnv()).toThrow(/RECOVERY_COOKIE_SECRET/)
+  })
+
+  it('warns in dev when RECOVERY_COOKIE_SECRET is not set', async () => {
+    delete process.env.RECOVERY_COOKIE_SECRET
+    delete process.env.NODE_ENV
+    process.env.STRIPE_SECRET_KEY = 'sk_test_xxx'
+    process.env.STRIPE_WEBHOOK_SECRET = 'whsec_xxx'
+    process.env.METRICS_API_KEY = 'test-key'
+
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    const { validateEnv } = await import('~/lib/env')
+    validateEnv()
+
+    expect(warnSpy).toHaveBeenCalledWith(
+      expect.stringContaining('RECOVERY_COOKIE_SECRET'),
+    )
+  })
 })

@@ -57,14 +57,14 @@ export function isClientAttemptExpired(expiresAt: string | null | undefined, now
 }
 
 function getRecoveryCookieSecret(): string {
-  const secret = process.env.RECOVERY_COOKIE_SECRET ?? process.env.STRIPE_SECRET_KEY
+  const secret = process.env.RECOVERY_COOKIE_SECRET
 
   if (secret) {
     return secret
   }
 
   if (process.env.NODE_ENV === 'production') {
-    throw new Error('A recovery cookie secret is required in production.')
+    throw new Error('RECOVERY_COOKIE_SECRET is required in production. Set a dedicated secret — do not reuse STRIPE_SECRET_KEY.')
   }
 
   return 'development-recovery-cookie-secret'
