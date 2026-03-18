@@ -49,7 +49,7 @@ async function recoverStaleJobs(): Promise<void> {
 async function startCleanupCron(): Promise<void> {
   try {
     const cron = await import('node-cron')
-    cronTask = cron.schedule('*/15 * * * *', () => {
+    cronTask = cron.schedule('*/5 * * * *', () => {
       void cleanupExpiredFiles().then(({ cleaned, errors }) => {
         if (cleaned > 0 || errors > 0) {
           logger.info({ cleaned, errors }, 'Cleanup cron completed')
