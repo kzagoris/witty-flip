@@ -372,6 +372,69 @@ describe('stripe', () => {
       })
       expect(attempt?.status).toBe('pending_payment')
     })
+
+    it('extends expiresAt to a fresh 30-minute window when creating a new checkout session', async () => {
+      const attemptId = 'attempt-extend-expiry'
+      // Create an attempt that is about to expire (only 2 minutes left)
+      const nearExpiry = new Date(Date.now() + 2 * 60_000).toISOString()
+      await insertClientAttempt(db, schema, {
+        id: attemptId,
+        status: 'payment_required',
+        expiresAt: nearExpiry,
+      })
+
+      mockStripeClient.checkout.sessions.create.mockResolvedValue({
+        id: 'sess_extend_expiry',
+        url: 'https://checkout.stripe.com/extend',
+        expires_at: Math.floor(Date.now() / 1000) + 30 * 60,
+      })
+
+      const { createClientCheckoutSession } = await import('~/lib/stripe')
+      await createClientCheckoutSession(attemptId)
+
+      const attempt = await db.query.clientConversionAttempts.findFirst({
+        where: eq(schema.clientConversionAttempts.id, attemptId),
+      })
+      expect(attempt?.status).toBe('pending_payment')
+      // expiresAt should be extended well beyond the original 2-minute window
+      const expiresAt = new Date(attempt!.expiresAt).getTime()
+      expect(expiresAt).toBeGreaterThan(Date.now() + 29 * 60_000)
+    })
+
+    it('extends expiresAt when reusing an existing open checkout session', async () => {
+      const attemptId = 'attempt-reuse-extend'
+      const nearExpiry = new Date(Date.now() + 2 * 60_000).toISOString()
+      const futureCheckoutExpiry = new Date(Date.now() + 10 * 60_000).toISOString()
+
+      await insertClientAttempt(db, schema, {
+        id: attemptId,
+        status: 'payment_required',
+        expiresAt: nearExpiry,
+      })
+      await insertPayment(db, schema, {
+        clientAttemptId: attemptId,
+        stripeSessionId: 'sess_reuse_extend',
+        status: 'pending',
+        checkoutExpiresAt: futureCheckoutExpiry,
+        conversionType: 'png-to-jpg',
+      })
+
+      mockStripeClient.checkout.sessions.retrieve.mockResolvedValue({
+        status: 'open',
+        url: 'https://checkout.stripe.com/reuse-extend',
+        id: 'sess_reuse_extend',
+      })
+
+      const { createClientCheckoutSession } = await import('~/lib/stripe')
+      await createClientCheckoutSession(attemptId)
+
+      const attempt = await db.query.clientConversionAttempts.findFirst({
+        where: eq(schema.clientConversionAttempts.id, attemptId),
+      })
+      expect(attempt?.status).toBe('pending_payment')
+      const expiresAt = new Date(attempt!.expiresAt).getTime()
+      expect(expiresAt).toBeGreaterThan(Date.now() + 29 * 60_000)
+    })
   })
 
   // -------------------------------------------------------------------------

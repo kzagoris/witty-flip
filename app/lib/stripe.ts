@@ -325,6 +325,7 @@ export async function createClientCheckoutSession(
         status: 'pending_payment',
         errorCode: null,
         errorMessage: null,
+        expiresAt: getClientAttemptExpiresAt(),
       })
       .where(eq(clientConversionAttempts.id, attemptId))
 
@@ -379,6 +380,7 @@ export async function createClientCheckoutSession(
         status: 'pending_payment',
         errorCode: null,
         errorMessage: null,
+        expiresAt: getClientAttemptExpiresAt(),
       })
       .where(eq(clientConversionAttempts.id, attemptId))
   })
