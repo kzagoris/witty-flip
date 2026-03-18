@@ -125,7 +125,13 @@ function parseCookieHeader(cookieHeader: string | null | undefined): Map<string,
         const name = rawName?.trim()
         if (!name) continue
 
-        cookies.set(name, decodeURIComponent(rawValue.join("=").trim()))
+        let decoded: string
+        try {
+            decoded = decodeURIComponent(rawValue.join("=").trim())
+        } catch {
+            decoded = rawValue.join("=").trim()
+        }
+        cookies.set(name, decoded)
     }
 
     return cookies

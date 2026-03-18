@@ -189,4 +189,47 @@ describe('processClientConversionStatus', () => {
       token: recoveryToken,
     })
   })
+
+  it('survives a malformed percent-escape in cookies and still parses valid cookies', async () => {
+    const {
+      getClientAttemptRecoveryCookieName,
+      hashClientAttemptToken,
+      signClientAttemptRecoveryCookie,
+    } = await import('~/lib/client-conversion-attempts')
+    const { processClientConversionStatus } = await import('~/server/api/client-conversion-status')
+
+    const attemptId = 'attempt-bad-cookie'
+    const recoveryToken = 'recovery-token-bad-cookie'
+
+    await db.insert(schema.clientConversionAttempts).values({
+      id: attemptId,
+      conversionType: 'png-to-jpg',
+      category: 'image',
+      ipAddress: '127.0.0.1',
+      inputMode: 'file',
+      tokenHash: hashClientAttemptToken(recoveryToken),
+      recoveryToken,
+      status: 'ready',
+      wasPaid: 1,
+      expiresAt: new Date(Date.now() + 30 * 60_000).toISOString(),
+    })
+
+    // Cookie header contains a malformed %ZZ value followed by the valid recovery cookie
+    const validCookie = `${getClientAttemptRecoveryCookieName(attemptId)}=${signClientAttemptRecoveryCookie(attemptId)}`
+    const cookieHeader = `bad_cookie=%ZZ; ${validCookie}`
+
+    // Different IP to force cookie-based ownership check
+    const result = await processClientConversionStatus(
+      { attemptId },
+      '203.0.113.99',
+      { cookieHeader },
+    )
+
+    expect(result.status).toBe(200)
+    expect(result.body).toMatchObject({
+      attemptId,
+      status: 'ready',
+      token: recoveryToken,
+    })
+  })
 })
