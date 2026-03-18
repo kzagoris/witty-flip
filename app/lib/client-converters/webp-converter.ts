@@ -9,6 +9,13 @@ import type {
 } from './types'
 import { normalizeImageMimeType } from './canvas-converter'
 
+export class EnhancedCodecLoadError extends Error {
+  constructor(message: string, options?: ErrorOptions) {
+    super(message, options)
+    this.name = "EnhancedCodecLoadError"
+  }
+}
+
 export interface WebpConverterConfig {
   targetMimeType: string
   targetExtension: string
@@ -44,7 +51,7 @@ export async function loadWebpCodec(): Promise<WebpCodecModule> {
     return await webpCodecPromise
   } catch (error) {
     webpCodecPromise = undefined
-    throw new Error("Enhanced quality couldn't load. Retry or continue in Standard mode.", {
+    throw new EnhancedCodecLoadError("Enhanced quality couldn't load. Retry or continue in Standard mode.", {
       cause: error,
     })
   }
@@ -149,11 +156,11 @@ async function getCodec(
   try {
     return await loadCodec()
   } catch (error) {
-    if (error instanceof Error && error.message.includes('Retry or continue in Standard mode')) {
+    if (error instanceof EnhancedCodecLoadError) {
       throw error
     }
 
-    throw new Error("Enhanced quality couldn't load. Retry or continue in Standard mode.", {
+    throw new EnhancedCodecLoadError("Enhanced quality couldn't load. Retry or continue in Standard mode.", {
       cause: error,
     })
   }

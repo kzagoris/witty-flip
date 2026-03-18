@@ -102,8 +102,8 @@ describe('enhanced WebP converter', () => {
     expect(result.mimeType).toBe('image/png')
   })
 
-  it('surfaces load failures with retry guidance so the UI can fall back to standard mode', async () => {
-    const { createWebpConverter } = await import('~/lib/client-converters/webp-converter')
+  it('surfaces load failures as EnhancedCodecLoadError so the UI can fall back to standard mode', async () => {
+    const { createWebpConverter, EnhancedCodecLoadError } = await import('~/lib/client-converters/webp-converter')
     browser.setNextImageData(createMockImageData(4, 4))
 
     const converter = createWebpConverter({
@@ -118,6 +118,15 @@ describe('enhanced WebP converter', () => {
         file: new File(['png'], 'source.png', { type: 'image/png' }),
       }),
     ).rejects.toThrow("Enhanced quality couldn't load. Retry or continue in Standard mode.")
+
+    try {
+      await converter.convert({
+        file: new File(['png'], 'source.png', { type: 'image/png' }),
+      })
+    } catch (error) {
+      expect(error).toBeInstanceOf(EnhancedCodecLoadError)
+      expect((error as EnhancedCodecLoadError).name).toBe('EnhancedCodecLoadError')
+    }
   })
 })
 
