@@ -239,6 +239,7 @@ stateDiagram-v2
 ## Git Commit Preferences
 
 - Never include `Co-Authored-By` trailers in commit messages.
+- When implementing multiple bugs or changes, commit each as a separate focused commit rather than one combined commit.
 
 ## Workflow Preferences
 
