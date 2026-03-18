@@ -500,7 +500,7 @@ async function handleClientCheckoutCompleted(
 
   validateCompletedSession(payment, session)
   const previousStatus = attempt.status
-  const shouldMoveToReady = previousStatus === 'pending_payment' || previousStatus === 'payment_required'
+  const shouldMoveToReady = previousStatus === 'pending_payment' || previousStatus === 'payment_required' || previousStatus === 'expired'
 
   if (payment.status === 'completed') {
     if (shouldMoveToReady) {
@@ -509,7 +509,9 @@ async function handleClientCheckoutCompleted(
         attemptId,
         stripeSessionId: session.id,
         previousStatus,
-      }, 'Recovered client conversion attempt after duplicate Stripe webhook')
+      }, previousStatus === 'expired'
+        ? 'Recovered expired client conversion attempt after payment completed'
+        : 'Recovered client conversion attempt after duplicate Stripe webhook')
       return
     }
 
@@ -558,7 +560,9 @@ async function handleClientCheckoutCompleted(
     attemptId,
     stripeSessionId: session.id,
     previousStatus,
-  }, 'Completed Stripe checkout handling for client conversion')
+  }, previousStatus === 'expired'
+    ? 'Recovered expired client conversion attempt after payment completed'
+    : 'Completed Stripe checkout handling for client conversion')
 }
 
 export async function handleCheckoutCompleted(session: Stripe.Checkout.Session): Promise<void> {

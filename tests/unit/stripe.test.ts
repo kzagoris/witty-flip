@@ -706,6 +706,84 @@ describe('stripe', () => {
         expect(mockEnqueueJob).toHaveBeenCalledWith(fileId)
       })
 
+      it('recovers an expired client attempt when webhook arrives after opportunistic expiry', async () => {
+        const attemptId = 'attempt-expired-recovery'
+        await insertClientAttempt(db, schema, {
+          id: attemptId,
+          status: 'expired',
+          wasPaid: 0,
+          expiresAt: new Date(Date.now() - 5 * 60_000).toISOString(),
+        })
+        await insertPayment(db, schema, {
+          clientAttemptId: attemptId,
+          stripeSessionId: 'sess_expired_recovery',
+          status: 'pending',
+          conversionType: 'png-to-jpg',
+        })
+
+        const { handleCheckoutCompleted } = await import('~/lib/stripe')
+        const { hashClientAttemptToken } = await import('~/lib/client-conversion-attempts')
+
+        await handleCheckoutCompleted(makeStripeSession({
+          sessionId: 'sess_expired_recovery',
+          attemptId,
+          paymentIntent: 'pi_expired_recovery',
+        }))
+
+        const payment = await db.query.payments.findFirst({
+          where: eq(schema.payments.stripeSessionId, 'sess_expired_recovery'),
+        })
+        expect(payment).toMatchObject({
+          status: 'completed',
+          stripePaymentIntent: 'pi_expired_recovery',
+        })
+
+        const attempt = await db.query.clientConversionAttempts.findFirst({
+          where: eq(schema.clientConversionAttempts.id, attemptId),
+        })
+        expect(attempt?.status).toBe('ready')
+        expect(attempt?.wasPaid).toBe(1)
+        expect(attempt?.recoveryToken).toBeTruthy()
+        expect(attempt?.tokenHash).toBe(hashClientAttemptToken(attempt!.recoveryToken!))
+        const expiresAt = new Date(attempt!.expiresAt).getTime()
+        expect(expiresAt).toBeGreaterThan(Date.now() + 29 * 60_000)
+        expect(mockEnqueueJob).not.toHaveBeenCalled()
+      })
+
+      it('recovers an expired client attempt on duplicate webhook when payment is already completed', async () => {
+        const attemptId = 'attempt-expired-dup'
+        await insertClientAttempt(db, schema, {
+          id: attemptId,
+          status: 'expired',
+          wasPaid: 0,
+          expiresAt: new Date(Date.now() - 5 * 60_000).toISOString(),
+        })
+        await insertPayment(db, schema, {
+          clientAttemptId: attemptId,
+          stripeSessionId: 'sess_expired_dup',
+          status: 'completed',
+          stripePaymentIntent: 'pi_expired_dup',
+          conversionType: 'png-to-jpg',
+        })
+
+        const { handleCheckoutCompleted } = await import('~/lib/stripe')
+
+        await handleCheckoutCompleted(makeStripeSession({
+          sessionId: 'sess_expired_dup',
+          attemptId,
+        }))
+
+        const attempt = await db.query.clientConversionAttempts.findFirst({
+          where: eq(schema.clientConversionAttempts.id, attemptId),
+        })
+        expect(attempt?.status).toBe('ready')
+        expect(attempt?.wasPaid).toBe(1)
+        expect(attempt?.recoveryToken).toBeTruthy()
+        const expiresAt = new Date(attempt!.expiresAt).getTime()
+        expect(expiresAt).toBeGreaterThan(Date.now() + 29 * 60_000)
+        expect(mockEnqueueJob).not.toHaveBeenCalled()
+      })
+
       it('recovers client attempts by minting a recovery token when payment is already completed but the attempt is still pending_payment', async () => {
         const attemptId = 'attempt-recovery'
         await insertClientAttempt(db, schema, { id: attemptId, status: 'pending_payment' })
