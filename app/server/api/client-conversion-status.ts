@@ -14,6 +14,7 @@ import {
 interface ClientConversionStatusServerDeps {
     and: typeof import("drizzle-orm").and
     eq: typeof import("drizzle-orm").eq
+    inArray: typeof import("drizzle-orm").inArray
     db: typeof import("~/lib/db").db
     clientConversionAttempts: typeof import("~/lib/db/schema").clientConversionAttempts
     getClientAttemptRecoveryCookieName: typeof import("~/lib/client-conversion-attempts").getClientAttemptRecoveryCookieName
@@ -24,6 +25,7 @@ interface ClientConversionStatusServerDeps {
     CLIENT_CONVERSION_STATUS_REQUESTS_PER_MINUTE_LIMIT: typeof import("~/lib/request-rate-limit").CLIENT_CONVERSION_STATUS_REQUESTS_PER_MINUTE_LIMIT
     initializeServerRuntime: typeof import("~/lib/server-runtime").initializeServerRuntime
     reconcileClientPendingPayment: typeof import("~/lib/stripe").reconcileClientPendingPayment
+    releaseRateLimitSlot: typeof import("~/lib/rate-limit").releaseRateLimitSlot
 }
 
 let clientConversionStatusServerDepsPromise: Promise<ClientConversionStatusServerDeps> | undefined
@@ -37,6 +39,7 @@ const getClientConversionStatusServerDeps = createServerOnlyFn(async (): Promise
         import("~/lib/request-rate-limit"),
         import("~/lib/server-runtime"),
         import("~/lib/stripe"),
+        import("~/lib/rate-limit"),
     ]).then(
         ([
             drizzleOrmModule,
@@ -46,9 +49,11 @@ const getClientConversionStatusServerDeps = createServerOnlyFn(async (): Promise
             requestRateLimitModule,
             serverRuntimeModule,
             stripeModule,
+            rateLimitModule,
         ]) => ({
             and: drizzleOrmModule.and,
             eq: drizzleOrmModule.eq,
+            inArray: drizzleOrmModule.inArray,
             db: dbModule.db,
             clientConversionAttempts: schemaModule.clientConversionAttempts,
             getClientAttemptRecoveryCookieName: clientConversionAttemptsModule.getClientAttemptRecoveryCookieName,
@@ -60,6 +65,7 @@ const getClientConversionStatusServerDeps = createServerOnlyFn(async (): Promise
                 requestRateLimitModule.CLIENT_CONVERSION_STATUS_REQUESTS_PER_MINUTE_LIMIT,
             initializeServerRuntime: serverRuntimeModule.initializeServerRuntime,
             reconcileClientPendingPayment: stripeModule.reconcileClientPendingPayment,
+            releaseRateLimitSlot: rateLimitModule.releaseRateLimitSlot,
         }),
     )
 
@@ -97,6 +103,7 @@ interface ClientConversionAttemptRecord {
     errorCode: string | null
     errorMessage: string | null
     ipAddress: string
+    rateLimitDate: string | null
     recoveryToken: string | null
     status: string
     wasPaid: number | null
@@ -191,6 +198,7 @@ export async function processClientConversionStatus(
     const {
         and,
         eq,
+        inArray,
         db,
         clientConversionAttempts,
         getClientAttemptRecoveryCookieName,
@@ -201,6 +209,7 @@ export async function processClientConversionStatus(
         CLIENT_CONVERSION_STATUS_REQUESTS_PER_MINUTE_LIMIT,
         initializeServerRuntime,
         reconcileClientPendingPayment,
+        releaseRateLimitSlot,
     } = await getClientConversionStatusServerDeps()
 
     initializeServerRuntime()
@@ -246,6 +255,29 @@ export async function processClientConversionStatus(
 
         if (!attempt) {
             return errorResult(404, "not_found", "Client conversion attempt not found.", { attemptId: parsed.attemptId })
+        }
+    }
+
+    if (attempt.status !== "expired" && isClientAttemptExpired(attempt.expiresAt)) {
+        try {
+            await db.transaction(async (tx) => {
+                const result = await tx
+                    .update(clientConversionAttempts)
+                    .set({ status: "expired", recoveryToken: null })
+                    .where(and(
+                        eq(clientConversionAttempts.id, attempt.id),
+                        inArray(clientConversionAttempts.status, ["reserved", "ready", "payment_required", "pending_payment"]),
+                    ))
+
+                if (result.rowsAffected > 0
+                    && attempt.status === "reserved"
+                    && attempt.wasPaid === 0
+                    && attempt.rateLimitDate) {
+                    await releaseRateLimitSlot(attempt.ipAddress, attempt.rateLimitDate, tx)
+                }
+            })
+        } catch (err) {
+            requestLogger.warn({ attemptId: attempt.id, err }, "Failed opportunistic expiry persistence")
         }
     }
 

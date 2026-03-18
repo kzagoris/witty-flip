@@ -1,4 +1,4 @@
-import { eq } from 'drizzle-orm'
+import { and, eq } from 'drizzle-orm'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { createTestSandbox, setupTestDb } from '../helpers/test-env'
 
@@ -188,6 +188,56 @@ describe('processClientConversionStatus', () => {
       paid: true,
       token: recoveryToken,
     })
+  })
+
+  it('persists expiry to DB and releases the rate-limit slot for an expired reserved attempt', async () => {
+    const { hashClientAttemptToken } = await import('~/lib/client-conversion-attempts')
+    const { reserveRateLimitSlot } = await import('~/lib/rate-limit')
+    const { processClientConversionStatus } = await import('~/server/api/client-conversion-status')
+
+    const attemptId = 'attempt-expired-reserved'
+    const ip = '10.0.0.1'
+    const rateLimitDate = '2026-03-18'
+
+    // Reserve a free slot so there's something to release
+    await reserveRateLimitSlot(ip, rateLimitDate)
+
+    const bucketBefore = await db.query.rateLimits.findFirst({
+      where: and(eq(schema.rateLimits.ipAddress, ip), eq(schema.rateLimits.date, rateLimitDate)),
+    })
+    expect(bucketBefore?.reservedFreeSlots).toBe(1)
+
+    await db.insert(schema.clientConversionAttempts).values({
+      id: attemptId,
+      conversionType: 'png-to-jpg',
+      category: 'image',
+      ipAddress: ip,
+      inputMode: 'file',
+      tokenHash: hashClientAttemptToken('tok'),
+      recoveryToken: 'tok',
+      status: 'reserved',
+      wasPaid: 0,
+      rateLimitDate,
+      expiresAt: new Date(Date.now() - 60_000).toISOString(), // already expired
+    })
+
+    const result = await processClientConversionStatus({ attemptId }, ip)
+
+    expect(result.status).toBe(200)
+    expect(result.body).toMatchObject({ attemptId, status: 'expired' })
+
+    // DB row should now be expired
+    const row = await db.query.clientConversionAttempts.findFirst({
+      where: eq(schema.clientConversionAttempts.id, attemptId),
+    })
+    expect(row?.status).toBe('expired')
+    expect(row?.recoveryToken).toBeNull()
+
+    // Rate-limit slot should have been released
+    const bucketAfter = await db.query.rateLimits.findFirst({
+      where: and(eq(schema.rateLimits.ipAddress, ip), eq(schema.rateLimits.date, rateLimitDate)),
+    })
+    expect(bucketAfter?.reservedFreeSlots).toBe(0)
   })
 
   it('survives a malformed percent-escape in cookies and still parses valid cookies', async () => {
