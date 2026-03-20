@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react'
 import { Link } from '@tanstack/react-router'
-import { ArrowRight, Sparkles } from 'lucide-react'
+import { ArrowRight } from 'lucide-react'
 import { Button } from '~/components/ui/button'
 import {
   buildQuickConvertSourceGroups,
@@ -67,32 +67,27 @@ export function QuickConvertSelector({
   return (
     <div className="space-y-4">
       <div>
-        <div className="flex items-center gap-2 text-sm font-semibold uppercase tracking-[0.24em] text-primary/80">
-          <Sparkles className="h-4 w-4" />
+        <h2 className="font-heading text-xl font-semibold tracking-tight">
           Quick convert
-        </div>
-        <h2 className="mt-2 font-heading text-2xl font-bold tracking-tight text-neutral-900">
-          Jump straight to the right tool
         </h2>
         <p className="mt-2 text-sm leading-6 text-muted-foreground">
-          Pick a source and target format, then open the matching converter page with the right
-          processing details.
+          Pick a source and target format, then open the matching converter page.
         </p>
       </div>
 
       {sourceGroups.length === 0 ? (
-        <div className="rounded-2xl border border-dashed bg-neutral-50 p-4 text-sm leading-6 text-muted-foreground">
+        <div className="rounded-lg border border-dashed bg-background p-4 text-sm leading-6 text-muted-foreground">
           {emptyStateMessage}
         </div>
       ) : (
         <>
           <div className="grid gap-3 sm:grid-cols-2">
-            <label className="block text-sm font-medium text-neutral-900">
+            <label className="block text-sm font-medium">
               <span className="mb-2 block text-xs font-semibold uppercase tracking-[0.22em] text-muted-foreground">
                 From
               </span>
               <select
-                className="h-11 w-full rounded-2xl border bg-white px-4 text-sm shadow-sm outline-none transition focus:border-primary focus:ring-2 focus:ring-primary/20"
+                className="h-11 w-full rounded-lg border bg-background px-4 text-sm outline-none transition-colors focus:border-primary focus:ring-2 focus:ring-primary/20"
                 onChange={(event) => setSourceFormat(event.target.value)}
                 value={sourceFormat}
               >
@@ -104,12 +99,12 @@ export function QuickConvertSelector({
               </select>
             </label>
 
-            <label className="block text-sm font-medium text-neutral-900">
+            <label className="block text-sm font-medium">
               <span className="mb-2 block text-xs font-semibold uppercase tracking-[0.22em] text-muted-foreground">
                 To
               </span>
               <select
-                className="h-11 w-full rounded-2xl border bg-white px-4 text-sm shadow-sm outline-none transition focus:border-primary focus:ring-2 focus:ring-primary/20"
+                className="h-11 w-full rounded-lg border bg-background px-4 text-sm outline-none transition-colors focus:border-primary focus:ring-2 focus:ring-primary/20"
                 onChange={(event) => setTargetSlug(event.target.value)}
                 value={targetSlug}
               >

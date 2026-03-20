@@ -168,8 +168,8 @@ export function ClientConversionPage({ conversion, initialQuota, search }: Clien
 
     if (flow.enhancedLoadFailed) {
       return (
-        <div className='rounded-xl border border-amber-200 bg-amber-50 px-4 py-4 space-y-3'>
-          <p className='text-sm text-amber-900'>
+        <div className='rounded-lg border-l-4 border-l-[var(--color-warning)] bg-secondary px-4 py-4 space-y-3'>
+          <p className='text-sm text-foreground'>
             Enhanced quality couldn't load. You can retry or continue with Standard mode.
           </p>
           <div className='flex gap-3'>
@@ -187,7 +187,7 @@ export function ClientConversionPage({ conversion, initialQuota, search }: Clien
     return (
       <div className='space-y-4'>
         {flow.needsFileReselection && flow.reselectionMessage && (
-          <div className='rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900'>
+          <div className='rounded-lg border-l-4 border-l-[var(--color-warning)] bg-secondary px-4 py-3 text-sm text-foreground'>
             {flow.reselectionMessage}
           </div>
         )}
@@ -207,27 +207,36 @@ export function ClientConversionPage({ conversion, initialQuota, search }: Clien
     <PageShell>
       <ConversionHero conversion={conversion} />
 
-      <div className='mt-8 space-y-6'>
-        {quota && (
-          <div className='flex justify-center'>
+      <div className='mt-10 grid gap-10 lg:grid-cols-[1fr,320px]'>
+        <div className='space-y-6'>
+          {renderFlowSection()}
+
+          {showConversionOptions && (
+            <ConversionOptions
+              processingMode={flow.processingMode}
+              onProcessingModeChange={flow.setProcessingMode}
+              quality={flow.quality}
+              onQualityChange={flow.setQuality}
+              disabled={isBusy}
+              hasEnhancedMode={flow.supportsEnhancedMode}
+            />
+          )}
+        </div>
+
+        <aside className='space-y-4'>
+          <PrivacyBadge processingMode='client' />
+          {quota && (
             <QuotaBadge remaining={quota.remaining} limit={quota.limit} />
+          )}
+          <div className='rounded-lg bg-secondary p-4'>
+            <h3 className='text-sm font-medium text-foreground'>How it works</h3>
+            <ol className='mt-2 space-y-2 text-xs text-muted-foreground'>
+              <li>1. Select your file</li>
+              <li>2. Conversion runs in your browser</li>
+              <li>3. Download the result instantly</li>
+            </ol>
           </div>
-        )}
-
-        <PrivacyBadge processingMode='client' />
-
-        {renderFlowSection()}
-
-        {showConversionOptions && (
-          <ConversionOptions
-            processingMode={flow.processingMode}
-            onProcessingModeChange={flow.setProcessingMode}
-            quality={flow.quality}
-            onQualityChange={flow.setQuality}
-            disabled={isBusy}
-            hasEnhancedMode={flow.supportsEnhancedMode}
-          />
-        )}
+        </aside>
       </div>
 
       <SEOContent html={conversion.seoContent} />

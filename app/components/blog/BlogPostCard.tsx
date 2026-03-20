@@ -1,7 +1,4 @@
 import { Link } from "@tanstack/react-router"
-import { ArrowRight } from "lucide-react"
-import { Card, CardHeader, CardTitle, CardDescription, CardFooter } from "~/components/ui/card"
-import { getConversionSummaryBySlug } from "~/lib/conversion-summaries"
 import type { BlogPostSummary } from "~/lib/blog"
 
 function formatDate(dateString: string): string {
@@ -13,46 +10,23 @@ function formatDate(dateString: string): string {
 }
 
 export function BlogPostCard({ post }: { post: BlogPostSummary }) {
-  const conversion = getConversionSummaryBySlug(post.relatedConversion)
-
   return (
-    <Link to="/blog/$slug" params={{ slug: post.slug }}>
-      <Card
-        className="group h-full cursor-pointer transition-all duration-200 hover:shadow-lg motion-safe:hover:scale-[1.02] border-l-4 border-l-transparent hover:border-l-[var(--card-accent)]"
-        style={{ "--card-accent": conversion?.formatColor ?? "#6366f1" } as React.CSSProperties}
-      >
-        <CardHeader>
-          <div className="mb-2 flex items-center gap-2">
-            <time dateTime={post.date} className="text-xs text-muted-foreground">
-              {formatDate(post.date)}
-            </time>
-            {conversion && (
-              <>
-                <span className="text-muted-foreground">&middot;</span>
-                <span className="inline-flex items-center gap-1 text-xs text-muted-foreground">
-                  <span
-                    className="inline-block h-2 w-2 rounded-full"
-                    style={{ backgroundColor: conversion.formatColor }}
-                  />
-                  {conversion.sourceFormat.toUpperCase()} &rarr; {conversion.targetFormat.toUpperCase()}
-                </span>
-              </>
-            )}
-          </div>
-          <CardTitle className="font-heading text-lg">
-            {post.title}
-          </CardTitle>
-          <CardDescription className="line-clamp-2">
-            {post.description}
-          </CardDescription>
-        </CardHeader>
-        <CardFooter>
-          <span className="inline-flex items-center gap-1 text-sm font-medium text-primary opacity-0 transition-opacity group-hover:opacity-100">
-            Read more
-            <ArrowRight className="h-3.5 w-3.5 transition-transform duration-200 group-hover:translate-x-0.5" />
-          </span>
-        </CardFooter>
-      </Card>
+    <Link
+      to="/blog/$slug"
+      params={{ slug: post.slug }}
+      className="group flex items-start gap-6 border-b py-5 transition-colors"
+    >
+      <time dateTime={post.date} className="shrink-0 text-sm text-muted-foreground w-24">
+        {formatDate(post.date)}
+      </time>
+      <div>
+        <h2 className="font-heading text-base font-medium text-foreground transition-colors group-hover:text-primary">
+          {post.title}
+        </h2>
+        <p className="mt-1 text-sm text-muted-foreground line-clamp-2">
+          {post.description}
+        </p>
+      </div>
     </Link>
   )
 }

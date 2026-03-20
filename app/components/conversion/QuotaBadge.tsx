@@ -1,4 +1,3 @@
-import { Badge } from '~/components/ui/badge'
 import { cn } from '~/lib/utils'
 
 interface QuotaBadgeProps {
@@ -10,16 +9,13 @@ export function QuotaBadge({ remaining, limit }: QuotaBadgeProps) {
   const hasRemaining = remaining > 0
 
   return (
-    <Badge
-      variant="outline"
+    <span
       className={cn(
-        'text-xs font-medium',
-        hasRemaining
-          ? 'border-green-300 bg-green-50 text-green-700'
-          : 'border-amber-300 bg-amber-50 text-amber-700',
+        'text-[11px] text-muted-foreground',
+        !hasRemaining && 'text-[var(--color-warning)]',
       )}
     >
       {remaining}/{limit} free conversions remaining
-    </Badge>
+    </span>
   )
 }

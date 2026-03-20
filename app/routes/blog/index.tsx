@@ -102,9 +102,9 @@ function BlogIndexPage() {
   const { posts } = Route.useLoaderData()
 
   return (
-    <PageShell>
+    <PageShell variant="narrow">
       <div className="mb-8">
-        <h1 className="font-heading text-3xl font-bold tracking-tight sm:text-4xl">
+        <h1 className="font-heading text-3xl font-semibold tracking-tight sm:text-4xl">
           WittyFlip Blog
         </h1>
         <p className="mt-2 text-lg text-muted-foreground">
@@ -115,7 +115,7 @@ function BlogIndexPage() {
       {posts.length === 0 ? (
         <p className="text-muted-foreground">No blog posts yet. Check back soon!</p>
       ) : (
-        <div className="grid grid-cols-1 gap-6 sm:grid-cols-2">
+        <div className="divide-y divide-border">
           {posts.map((post) => (
             <BlogPostCard key={post.slug} post={post} />
           ))}

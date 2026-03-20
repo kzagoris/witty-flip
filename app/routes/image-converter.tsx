@@ -1,22 +1,10 @@
 import { Link, createFileRoute } from '@tanstack/react-router'
-import {
-  ArrowRight,
-  Images,
-  LockKeyhole,
-  MonitorSmartphone,
-} from 'lucide-react'
+import { ArrowRight } from 'lucide-react'
 import { FAQSection } from '~/components/conversion/FAQSection'
 import { CategoryConversionGrid } from '~/components/hub/CategoryConversionGrid'
 import { HubPage } from '~/components/hub/HubPage'
 import { QuickConvertSelector } from '~/components/hub/QuickConvertSelector'
 import { Button } from '~/components/ui/button'
-import {
-  Card,
-  CardContent,
-  CardDescription,
-  CardHeader,
-  CardTitle,
-} from '~/components/ui/card'
 import {
   getDisplayConversionSummariesByCategory,
   getConversionCategoryConfig,
@@ -37,7 +25,7 @@ const imageHubFaqs: ConversionFAQ[] = [
   {
     question: 'Are converted image files stored after I finish?',
     answer:
-      'Browser-based results stay on your device. If a workflow ever needs a server-side step, the conversion page spells that out and the file follows WittyFlip’s temporary retention rules.',
+      'Browser-based results stay on your device. If a workflow ever needs a server-side step, the conversion page spells that out and the file follows WittyFlip\u2019s temporary retention rules.',
   },
   {
     question: 'Why use the hub instead of going straight to a converter?',
@@ -146,66 +134,40 @@ function ImageConverterPage() {
         title="Image conversion tools"
       />
 
-      <section className="mt-10 grid gap-6 lg:grid-cols-2">
-        <Card className="rounded-[1.75rem] border shadow-sm">
-          <CardHeader>
-            <div className="inline-flex h-11 w-11 items-center justify-center rounded-2xl bg-fuchsia-100 text-fuchsia-700">
-              <Images className="h-5 w-5" />
-            </div>
-            <CardTitle className="font-heading text-2xl">Why start from the image hub?</CardTitle>
-            <CardDescription>
-              Image workflows tend to branch quickly once you compare compression, compatibility, and
-              transparency requirements.
-            </CardDescription>
-          </CardHeader>
-          <CardContent className="space-y-3 text-sm leading-6 text-muted-foreground">
-            <p>
-              Use the hub when you know the source and target formats but want a quicker path than
-              scanning the whole site.
-            </p>
-            <ul className="space-y-2">
-              <li>• jump directly to the exact format pair from the quick convert selector</li>
-              <li>• compare related PNG, JPG, WebP, AVIF, and SVG tools in one place</li>
-              <li>• keep privacy notes and processing expectations consistent across the cluster</li>
-            </ul>
-          </CardContent>
-        </Card>
+      <section className="mt-10 grid gap-8 lg:grid-cols-2">
+        <div>
+          <h2 className="font-heading text-2xl font-semibold">Why start from the image hub?</h2>
+          <p className="mt-2 text-sm leading-6 text-muted-foreground">
+            Image workflows tend to branch quickly once you compare compression, compatibility, and
+            transparency requirements. Use the hub when you know the source and target formats but want
+            a quicker path than scanning the whole site.
+          </p>
+          <ul className="mt-3 space-y-2 text-sm leading-6 text-muted-foreground">
+            <li>Jump directly to the exact format pair from the quick convert selector</li>
+            <li>Compare related PNG, JPG, WebP, AVIF, and SVG tools in one place</li>
+            <li>Keep privacy notes and processing expectations consistent across the cluster</li>
+          </ul>
+        </div>
 
-        <Card className="rounded-[1.75rem] border shadow-sm">
-          <CardHeader>
-            <div className="inline-flex h-11 w-11 items-center justify-center rounded-2xl bg-emerald-100 text-emerald-700">
-              <LockKeyhole className="h-5 w-5" />
-            </div>
-            <CardTitle className="font-heading text-2xl">Privacy and processing</CardTitle>
-            <CardDescription>
-              WittyFlip surfaces the processing model before you start so you know what stays local.
-            </CardDescription>
-          </CardHeader>
-          <CardContent className="space-y-4 text-sm leading-6 text-muted-foreground">
-            <div className="rounded-2xl border bg-neutral-50 p-4">
-              <div className="flex items-center gap-3 font-medium text-neutral-900">
-                <MonitorSmartphone className="h-4 w-4 text-primary" />
-                Browser-first image workflows
-              </div>
-              <p className="mt-2">
-                Many image tools in this phase are designed to run in your browser so files can stay
-                on your device throughout conversion.
-              </p>
-            </div>
-
-            <div className="flex flex-wrap gap-3">
-              <Button asChild variant="outline">
-                <Link to="/privacy">Read privacy details</Link>
-              </Button>
-              <Button asChild className="gap-2">
-                <Link to="/">
-                  Explore all categories
-                  <ArrowRight className="h-4 w-4" />
-                </Link>
-              </Button>
-            </div>
-          </CardContent>
-        </Card>
+        <div>
+          <h2 className="font-heading text-2xl font-semibold">Privacy and processing</h2>
+          <p className="mt-2 text-sm leading-6 text-muted-foreground">
+            WittyFlip surfaces the processing model before you start so you know what stays local.
+            Many image tools in this phase are designed to run in your browser so files can stay
+            on your device throughout conversion.
+          </p>
+          <div className="mt-4 flex flex-wrap gap-3">
+            <Button asChild variant="outline" size="sm">
+              <Link to="/privacy">Read privacy details</Link>
+            </Button>
+            <Button asChild size="sm">
+              <Link to="/">
+                Explore all categories
+                <ArrowRight className="h-4 w-4" />
+              </Link>
+            </Button>
+          </div>
+        </div>
       </section>
 
       <FAQSection faqs={imageHubFaqs} />

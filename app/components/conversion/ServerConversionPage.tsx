@@ -185,16 +185,25 @@ export function ServerConversionPage({ conversion, initialQuota, search }: Serve
     <PageShell>
       <ConversionHero conversion={conversion} />
 
-      <div className='mt-8 space-y-6'>
-        {quota && (
-          <div className='flex justify-center'>
+      <div className='mt-10 grid gap-10 lg:grid-cols-[1fr,320px]'>
+        <div className='space-y-6'>
+          {renderFlowSection()}
+        </div>
+
+        <aside className='space-y-4'>
+          <PrivacyBadge processingMode='server' />
+          {quota && (
             <QuotaBadge remaining={quota.remaining} limit={quota.limit} />
+          )}
+          <div className='rounded-lg bg-secondary p-4'>
+            <h3 className='text-sm font-medium text-foreground'>How it works</h3>
+            <ol className='mt-2 space-y-2 text-xs text-muted-foreground'>
+              <li>1. Upload your file</li>
+              <li>2. We convert it on our servers</li>
+              <li>3. Download your converted file</li>
+            </ol>
           </div>
-        )}
-
-        <PrivacyBadge processingMode='server' />
-
-        {renderFlowSection()}
+        </aside>
       </div>
 
       <SEOContent html={conversion.seoContent} />

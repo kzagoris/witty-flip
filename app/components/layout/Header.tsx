@@ -1,3 +1,4 @@
+import { useEffect, useState } from 'react'
 import { Link } from '@tanstack/react-router'
 import { ChevronDown } from 'lucide-react'
 import {
@@ -7,7 +8,6 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from '~/components/ui/dropdown-menu'
-import { Button } from '~/components/ui/button'
 import {
   getConversionCategoryConfig,
   getDisplayConversionSummariesByCategory,
@@ -27,38 +27,55 @@ const categoryLinks = categoryOrder
   .filter((category) => category.conversions.length > 0 || category.hubHref)
 
 export function Header() {
+  const [scrolled, setScrolled] = useState(false)
+
+  useEffect(() => {
+    const onScroll = () => setScrolled(window.scrollY > 8)
+    onScroll()
+    window.addEventListener('scroll', onScroll, { passive: true })
+    return () => window.removeEventListener('scroll', onScroll)
+  }, [])
+
   return (
-    <header className='sticky top-0 z-50 border-b bg-white/95 backdrop-blur supports-[backdrop-filter]:bg-white/60'>
-      <div className='mx-auto flex h-14 max-w-5xl items-center justify-between px-4'>
-        <Link to='/' className='flex items-center gap-1.5'>
-          <span className='font-heading text-xl font-bold text-primary'>WittyFlip</span>
+    <header
+      className='sticky top-0 z-50 bg-background/92 backdrop-blur-md transition-shadow duration-200'
+      data-scrolled={scrolled || undefined}
+      style={{ boxShadow: scrolled ? '0 1px 3px 0 rgb(0 0 0 / 0.06)' : 'none' }}
+    >
+      <div className='mx-auto flex h-16 max-w-6xl items-center justify-between px-5 sm:px-8 lg:px-12'>
+        <Link to='/' className='flex items-center gap-0'>
+          <span className='font-heading text-xl font-semibold text-foreground'>WittyFlip</span>
+          <span className='font-heading text-xl font-semibold text-primary'>.</span>
         </Link>
 
-        <nav className='flex items-center gap-1'>
-          <Link to='/image-converter'>
-            <Button variant='ghost' size='sm'>
-              Image tools
-            </Button>
+        <nav className='flex items-center gap-6'>
+          <Link
+            to='/image-converter'
+            className='text-sm font-medium tracking-wide text-muted-foreground transition-colors hover:text-foreground hover:underline hover:underline-offset-4'
+          >
+            Image tools
           </Link>
 
-          <Link to='/blog'>
-            <Button variant='ghost' size='sm'>
-              Blog
-            </Button>
+          <Link
+            to='/blog'
+            className='text-sm font-medium tracking-wide text-muted-foreground transition-colors hover:text-foreground hover:underline hover:underline-offset-4'
+          >
+            Blog
           </Link>
 
-          <Link to='/privacy'>
-            <Button variant='ghost' size='sm'>
-              Privacy
-            </Button>
+          <Link
+            to='/privacy'
+            className='text-sm font-medium tracking-wide text-muted-foreground transition-colors hover:text-foreground hover:underline hover:underline-offset-4'
+          >
+            Privacy
           </Link>
 
           <DropdownMenu>
             <DropdownMenuTrigger asChild>
-              <Button variant='ghost' size='sm' className='gap-1'>
+              <button className='inline-flex items-center gap-1 text-sm font-medium tracking-wide text-muted-foreground transition-colors hover:text-foreground'>
                 Browse tools
                 <ChevronDown className='h-3.5 w-3.5' />
-              </Button>
+              </button>
             </DropdownMenuTrigger>
             <DropdownMenuContent align='end' className='w-80 p-2'>
               {categoryLinks.map((category, index) => (
@@ -91,11 +108,9 @@ export function Header() {
                         params={{ conversionType: conversion.slug }}
                         className='cursor-pointer'
                       >
-                        <span
-                          className='inline-block h-2.5 w-2.5 rounded-full'
-                          style={{ backgroundColor: conversion.formatColor }}
-                        />
-                        {conversion.sourceFormat.toUpperCase()} &rarr; {conversion.targetFormat.toUpperCase()}
+                        <span className='text-sm text-muted-foreground'>
+                          {conversion.sourceFormat.toUpperCase()} &rarr; {conversion.targetFormat.toUpperCase()}
+                        </span>
                       </Link>
                     </DropdownMenuItem>
                   ))}

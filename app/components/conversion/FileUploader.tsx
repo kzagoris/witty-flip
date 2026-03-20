@@ -54,7 +54,6 @@ export function FileUploader({
     (e: React.ChangeEvent<HTMLInputElement>) => {
       const file = e.target.files?.[0]
       if (file) handleFile(file)
-      // Reset input so same file can be re-selected
       e.target.value = ''
     },
     [handleFile],
@@ -79,32 +78,34 @@ export function FileUploader({
         onDragLeave={() => setIsDragging(false)}
         onDrop={handleDrop}
         className={cn(
-          'relative flex cursor-pointer flex-col items-center justify-center rounded-xl border-2 border-dashed px-6 py-12 text-center transition-all',
+          'relative flex cursor-pointer items-center gap-4 rounded-lg border border-dashed px-6 py-8 transition-colors',
           isDragging
-            ? 'scale-[1.02] border-primary bg-primary/5'
-            : 'border-neutral-300 hover:border-primary/50 hover:bg-neutral-50',
+            ? 'border-primary bg-primary/5'
+            : 'border-border hover:border-primary/50 hover:bg-secondary/50',
           disabled && 'pointer-events-none opacity-50',
         )}
       >
         <div
           className={cn(
-            'mb-3 rounded-full p-3 transition-colors',
-            isDragging ? 'bg-primary/10 text-primary' : 'bg-neutral-100 text-neutral-500 motion-safe:animate-pulse-border',
+            'rounded-lg p-3 transition-colors',
+            isDragging ? 'bg-primary/10 text-primary' : 'bg-secondary text-muted-foreground',
           )}
         >
           {isDragging ? (
-            <FileIcon className="h-8 w-8 motion-safe:animate-slide-in-right" />
+            <FileIcon className="h-6 w-6" />
           ) : (
-            <Upload className="h-8 w-8" />
+            <Upload className="h-6 w-6" />
           )}
         </div>
-        <p className="text-sm font-medium text-neutral-700">
-          {isDragging ? 'Drop your file here' : 'Drag & drop your file here'}
-        </p>
-        <p className="mt-1 text-xs text-muted-foreground">
-          or click to browse &middot; Max {maxSizeMB}MB &middot;{' '}
-          {sourceExtensions.map((e) => e.toUpperCase()).join(', ')}
-        </p>
+        <div className="text-left">
+          <p className="text-sm font-medium text-foreground">
+            {isDragging ? 'Drop your file here' : 'Drag & drop your file here'}
+          </p>
+          <p className="mt-0.5 text-xs text-muted-foreground">
+            or click to browse &middot; Max {maxSizeMB}MB &middot;{' '}
+            {sourceExtensions.map((e) => e.toUpperCase()).join(', ')}
+          </p>
+        </div>
         <input
           ref={inputRef}
           type="file"
