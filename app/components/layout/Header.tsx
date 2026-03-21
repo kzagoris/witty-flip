@@ -72,7 +72,7 @@ export function Header() {
 
           <DropdownMenu>
             <DropdownMenuTrigger asChild>
-              <button className='inline-flex items-center gap-1 text-sm font-medium tracking-wide text-muted-foreground transition-colors hover:text-foreground'>
+              <button className='inline-flex cursor-pointer items-center gap-1 text-sm font-medium tracking-wide text-muted-foreground transition-colors hover:text-foreground'>
                 Browse tools
                 <ChevronDown className='h-3.5 w-3.5' />
               </button>
@@ -94,7 +94,7 @@ export function Header() {
                       {category.hubHref && (
                         <Link
                           to={category.hubHref}
-                          className='text-xs font-medium text-primary hover:underline'>
+                          className='whitespace-nowrap text-xs font-medium text-primary hover:underline'>
                           See all
                         </Link>
                       )}
@@ -106,9 +106,14 @@ export function Header() {
                       <Link
                         to='/$conversionType'
                         params={{ conversionType: conversion.slug }}
-                        className='cursor-pointer'
+                        className='group/conv cursor-pointer'
+                        style={{ '--format-color': conversion.formatColor } as React.CSSProperties}
                       >
-                        <span className='text-sm text-muted-foreground'>
+                        <span
+                          className='h-2 w-2 shrink-0 rounded-full'
+                          style={{ backgroundColor: conversion.formatColor }}
+                        />
+                        <span className='text-sm text-muted-foreground transition-colors group-data-[highlighted]/conv:text-[var(--format-color)]'>
                           {conversion.sourceFormat.toUpperCase()} &rarr; {conversion.targetFormat.toUpperCase()}
                         </span>
                       </Link>
