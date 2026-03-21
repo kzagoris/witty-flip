@@ -106,7 +106,7 @@ export function Header() {
                       <Link
                         to='/$conversionType'
                         params={{ conversionType: conversion.slug }}
-                        className='group/conv cursor-pointer'
+                        className='group/conv cursor-pointer dropdown-item-format-color'
                         style={{ '--format-color': conversion.formatColor } as React.CSSProperties}
                       >
                         <span

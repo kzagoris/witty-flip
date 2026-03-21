@@ -94,4 +94,9 @@
   .prose a:hover {
     opacity: 0.8;
   }
+
+  .dropdown-item-format-color[data-highlighted] {
+    background-color: color-mix(in oklch, var(--format-color) 12%, transparent);
+    color: var(--format-color);
+  }
 }
