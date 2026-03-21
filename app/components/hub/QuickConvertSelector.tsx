@@ -119,7 +119,11 @@ export function QuickConvertSelector({
 
           {selectedConversion ? (
             <Button asChild className="w-full gap-2 sm:w-auto">
-              <Link to="/$conversionType" params={{ conversionType: selectedConversion.slug }}>
+              <Link
+                to="/$conversionType"
+                params={{ conversionType: selectedConversion.slug }}
+                style={{ backgroundColor: selectedConversion.formatColor }}
+              >
                 Open {selectedConversion.sourceFormat.toUpperCase()} →{' '}
                 {selectedConversion.targetFormat.toUpperCase()}
                 <ArrowRight className="h-4 w-4" />
