@@ -87,7 +87,7 @@ export function QuickConvertSelector({
                 From
               </span>
               <select
-                className="h-11 w-full rounded-lg border bg-background px-4 text-sm outline-none transition-colors focus:border-primary focus:ring-2 focus:ring-primary/20"
+                className="h-11 w-full cursor-pointer rounded-lg border bg-background px-4 text-sm outline-none transition-colors focus:border-primary focus:ring-2 focus:ring-primary/20"
                 onChange={(event) => setSourceFormat(event.target.value)}
                 value={sourceFormat}
               >
@@ -104,7 +104,7 @@ export function QuickConvertSelector({
                 To
               </span>
               <select
-                className="h-11 w-full rounded-lg border bg-background px-4 text-sm outline-none transition-colors focus:border-primary focus:ring-2 focus:ring-primary/20"
+                className="h-11 w-full cursor-pointer rounded-lg border bg-background px-4 text-sm outline-none transition-colors focus:border-primary focus:ring-2 focus:ring-primary/20"
                 onChange={(event) => setTargetSlug(event.target.value)}
                 value={targetSlug}
               >
